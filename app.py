@@ -43,7 +43,7 @@ try:
 except ImportError:
     AUTOREFRESH_AVAILABLE = False
 
-st.set_page_config(page_title="NBFC Terminal", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Northgate Credit", layout="wide", page_icon="📊")
 
 # ---------------------------------------------------------------------------
 # Dark terminal styling
@@ -403,7 +403,8 @@ def render_company_detail(company_name: str, symbol: str):
 if AUTOREFRESH_AVAILABLE:
     st_autorefresh(interval=60_000, key="data_refresh")
 
-st.title("📊 NBFC / Private-Credit Terminal")
+st.title("📊 Northgate Credit")
+st.caption("NBFC & Private-Credit Terminal")
 st.caption(
     f"Last refreshed: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}"
     + ("  ·  auto-updates every 60s" if AUTOREFRESH_AVAILABLE else "")
