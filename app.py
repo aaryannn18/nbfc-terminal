@@ -1,15 +1,16 @@
 """
-NBFC / Private-Credit Terminal — v1
------------------------------------
+Tradeloop — v2
+--------------
 A dark, data-dense dashboard covering NBFC/lending-sector stocks, Indian
 large-caps, major US companies, two headline indices, RBI regulatory
-updates, and a per-company deep-dive view (price history in multiple
-timeframes and chart types, valuation ratios, and a peer-comparison
-table).
+updates plus worldwide market news, and a per-company deep-dive view
+(price history in multiple timeframes and chart types, valuation ratios,
+and a peer-comparison table).
 
 Data sources (all free):
   - Yahoo Finance (via yfinance) for quotes, history and fundamentals
   - RBI's own RSS feeds for circulars/notifications and press releases
+  - CNBC's public RSS feeds for worldwide markets/finance news
 
 Run it:
     pip install -r requirements.txt
@@ -52,12 +53,21 @@ st.set_page_config(page_title="Tradeloop", layout="wide", page_icon="📊")
 st.markdown(
     """
     <style>
-    .stApp { background-color: #0a0e14; color: #e8e8e8; }
-    section[data-testid="stSidebar"] { background-color: #0d1117; }
-    div[data-testid="stMetricValue"] { font-family: 'Courier New', monospace; }
-    .stDataFrame { font-family: 'Courier New', monospace; }
-    h1, h2, h3 { font-family: 'Courier New', monospace; letter-spacing: 0.5px; }
-    .stTabs [data-baseweb="tab"] { font-family: 'Courier New', monospace; }
+    .stApp {
+        background-color: #0e1117;
+        color: #d1d4dc;
+        font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    section[data-testid="stSidebar"] { background-color: #131722; }
+    div[data-testid="stMetric"] {
+        background-color: #161b22;
+        padding: 12px 16px;
+        border-radius: 8px;
+        border: 1px solid #262b36;
+    }
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
+    h1, h2, h3 { font-weight: 700; letter-spacing: -0.3px; }
+    .stTabs [data-baseweb="tab"] { font-weight: 500; font-size: 0.95rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -450,14 +460,14 @@ with col_watchlist:
     )
 
 with col_feed:
-    st.subheader("RBI Regulatory Feed")
-    feed_choice = st.selectbox("Feed", list(RBI_FEEDS.keys()))
-    items = fetch_rbi_feed(RBI_FEEDS[feed_choice])
+    st.subheader("News Feed")
+    feed_choice = st.selectbox("Feed", list(NEWS_FEEDS.keys()))
+    items = fetch_news_feed(NEWS_FEEDS[feed_choice])
 
     if not items:
         st.warning(
-            "Couldn't load this feed right now — RBI occasionally changes "
-            "its RSS endpoints. Double-check the URL in RBI_FEEDS at the "
+            "Couldn't load this feed right now — sources occasionally change "
+            "their RSS endpoints. Double-check the URL in NEWS_FEEDS at the "
             "top of this file."
         )
     else:
