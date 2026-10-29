@@ -136,9 +136,12 @@ INDEX_TICKERS = {
     "NASDAQ Composite": "^IXIC",
 }
 
-RBI_FEEDS = {
-    "Notifications / Circulars": "https://rbi.org.in/notifications_rss.xml",
-    "Press Releases": "https://rbi.org.in/pressreleases_rss.xml",
+NEWS_FEEDS = {
+    "RBI — Notifications / Circulars": "https://rbi.org.in/notifications_rss.xml",
+    "RBI — Press Releases": "https://rbi.org.in/pressreleases_rss.xml",
+    "World — Top News (CNBC)": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "World — Global Markets (CNBC)": "https://www.cnbc.com/id/100727362/device/rss/rss.html",
+    "World — Finance (CNBC)": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
 }
 
 # period, interval — matched to what Yahoo Finance actually supports for
@@ -206,7 +209,7 @@ def fetch_index_snapshot(ticker: str):
 
 
 @st.cache_data(ttl=300)
-def fetch_rbi_feed(url: str, limit: int = 12) -> list[dict]:
+def fetch_news_feed(url: str, limit: int = 12) -> list[dict]:
     try:
         parsed = feedparser.parse(url)
         return [
