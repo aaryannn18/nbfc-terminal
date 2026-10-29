@@ -59,13 +59,6 @@ st.markdown(
         font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
     section[data-testid="stSidebar"] { background-color: #131722; }
-    div[data-testid="stMetric"] {
-        background-color: #161b22;
-        padding: 12px 16px;
-        border-radius: 8px;
-        border: 1px solid #262b36;
-    }
-    .stDataFrame { border-radius: 8px; overflow: hidden; }
     h1, h2, h3 { font-weight: 700; letter-spacing: -0.3px; }
     .stTabs [data-baseweb="tab"] { font-weight: 500; font-size: 0.95rem; }
     </style>
