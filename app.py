@@ -1,14 +1,13 @@
 """
 Tradeloop — v2
 --------------
-A dark, data-dense dashboard covering NBFC/lending-sector stocks, Indian
-large-caps, major US companies, two headline indices, RBI regulatory
-updates plus worldwide market news, and a per-company deep-dive view
-(price history in multiple timeframes and chart types, valuation ratios,
-and a peer-comparison table).
+A dark, data-dense dashboard covering stock exchanges around the world, two
+headline indices, RBI regulatory updates plus worldwide market news, and a
+per-exchange deep-dive view (price history in multiple timeframes and chart
+types, trailing returns, and a regional peer table).
 
 Data sources (all free):
-  - Yahoo Finance (via yfinance) for quotes, history and fundamentals
+  - Yahoo Finance (via yfinance) for quotes and history
   - RBI's own RSS feeds for circulars/notifications and press releases
   - CNBC's public RSS feeds for worldwide markets/finance news
 
@@ -20,12 +19,16 @@ Known limits of a free-data v1 (be upfront about these with anyone you
 show this to):
   - Quotes are delayed, not real-time tick data — fine for a dashboard,
     not for execution.
+  - An exchange doesn't have a single price, so each one is shown through its
+    benchmark index (NYSE -> NYSE Composite, NSE -> Nifty 50, and so on).
+    Levels are index points, not currency.
+  - Not every exchange is on Yahoo Finance. Any that come back empty are
+    hidden by default; untick the box above the table to see them.
   - Intraday history only goes back a handful of days (a Yahoo Finance
     limit, not a bug) — that's why "1 Day" / "5 Days" only show recent
     sessions.
-  - "Competitors" are just other companies in the same watchlist
-    category, not a true sector-matched peer set — good enough for a
-    v1, worth refining later with real sector tags if this gets traction.
+  - "Peers" are the other exchanges in the same region, not a statistical
+    peer set.
 """
 
 from datetime import datetime
@@ -67,72 +70,105 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Config — edit these dicts to match the book of whoever you're building
-# this for. NSE tickers end in .NS; US tickers need no suffix. Verify
-# against nseindia.com / finance.yahoo.com if a ticker ever looks wrong.
+# Config — one line per exchange:
+#     (exchange, country, benchmark index, Yahoo Finance symbol)
+#
+# Yahoo has no single "price" for an exchange, so each one is tracked through
+# its benchmark index. To add an exchange, drop a new line into a region (or
+# add a new region) — the tabs, the table and the deep-dive menu all build
+# themselves from this dict. If a row ever comes back empty, check its symbol
+# on finance.yahoo.com. Keep exchange names unique.
 # ---------------------------------------------------------------------------
 
-NBFC_WATCHLIST = {
-    "Bajaj Finance": "BAJFINANCE.NS",
-    "Cholamandalam Inv & Fin": "CHOLAFIN.NS",
-    "Shriram Finance": "SHRIRAMFIN.NS",
-    "M&M Financial Services": "M&MFIN.NS",
-    "LIC Housing Finance": "LICHSGFIN.NS",
-    "Muthoot Finance": "MUTHOOTFIN.NS",
-    "PNB Housing Finance": "PNBHOUSING.NS",
-    "Power Finance Corp": "PFC.NS",
-    "REC Limited": "RECLTD.NS",
-    "L&T Finance": "LTF.NS",
+EXCHANGES = {
+    "Americas": [
+        ("New York Stock Exchange (NYSE)", "United States", "NYSE Composite", "^NYA"),
+        ("Nasdaq", "United States", "Nasdaq Composite", "^IXIC"),
+        ("NYSE American", "United States", "NYSE American Composite", "^XAX"),
+        ("Toronto Stock Exchange (TSX)", "Canada", "S&P/TSX Composite", "^GSPTSE"),
+        ("TSX Venture Exchange", "Canada", "S&P/TSX Venture Composite", "^SPCDNX"),
+        ("Bolsa Mexicana de Valores (BMV)", "Mexico", "S&P/BMV IPC", "^MXX"),
+        ("B3 (Brasil Bolsa Balcão)", "Brazil", "Ibovespa", "^BVSP"),
+        ("Bolsa de Comercio de Buenos Aires", "Argentina", "S&P Merval", "^MERV"),
+        ("Bolsa de Santiago", "Chile", "S&P CLX IPSA", "^IPSA"),
+        ("Bolsa de Valores de Lima (BVL)", "Peru", "S&P/BVL Peru General", "^SPBLPGPT"),
+        ("Bolsa de Valores de Colombia (BVC)", "Colombia", "MSCI COLCAP", "^COLCAP"),
+    ],
+    "Europe": [
+        ("London Stock Exchange (LSE)", "United Kingdom", "FTSE 100", "^FTSE"),
+        ("Euronext (pan-European)", "Europe", "Euronext 100", "^N100"),
+        ("Euronext Paris", "France", "CAC 40", "^FCHI"),
+        ("Euronext Amsterdam", "Netherlands", "AEX", "^AEX"),
+        ("Euronext Brussels", "Belgium", "BEL 20", "^BFX"),
+        ("Euronext Lisbon", "Portugal", "PSI", "PSI20.LS"),
+        ("Euronext Dublin", "Ireland", "ISEQ Overall", "^ISEQ"),
+        ("Euronext Oslo", "Norway", "OSE Benchmark", "OSEBX.OL"),
+        ("Euronext Milan (Borsa Italiana)", "Italy", "FTSE MIB", "FTSEMIB.MI"),
+        ("Deutsche Börse (Frankfurt / Xetra)", "Germany", "DAX", "^GDAXI"),
+        ("SIX Swiss Exchange", "Switzerland", "SMI", "^SSMI"),
+        ("Bolsas y Mercados Españoles (BME)", "Spain", "IBEX 35", "^IBEX"),
+        ("Nasdaq Stockholm", "Sweden", "OMX Stockholm 30", "^OMX"),
+        ("Nasdaq Copenhagen", "Denmark", "OMX Copenhagen 25", "^OMXC25"),
+        ("Nasdaq Helsinki", "Finland", "OMX Helsinki 25", "^OMXH25"),
+        ("Wiener Börse (Vienna)", "Austria", "ATX", "^ATX"),
+        ("Warsaw Stock Exchange (GPW)", "Poland", "WIG20", "WIG20.WA"),
+        ("Athens Exchange (ATHEX)", "Greece", "Athens General Composite", "GD.AT"),
+        ("Borsa Istanbul", "Türkiye", "BIST 100", "XU100.IS"),
+    ],
+    "Asia-Pacific": [
+        ("National Stock Exchange of India (NSE)", "India", "Nifty 50", "^NSEI"),
+        ("BSE (Bombay Stock Exchange)", "India", "S&P BSE Sensex", "^BSESN"),
+        ("Japan Exchange Group (Tokyo)", "Japan", "Nikkei 225", "^N225"),
+        ("Shanghai Stock Exchange (SSE)", "China", "SSE Composite", "000001.SS"),
+        ("Shenzhen Stock Exchange (SZSE)", "China", "SZSE Component", "399001.SZ"),
+        ("Hong Kong Exchanges (HKEX)", "Hong Kong", "Hang Seng", "^HSI"),
+        ("Korea Exchange (KOSPI)", "South Korea", "KOSPI Composite", "^KS11"),
+        ("Korea Exchange (KOSDAQ)", "South Korea", "KOSDAQ Composite", "^KQ11"),
+        ("Taiwan Stock Exchange (TWSE)", "Taiwan", "TAIEX", "^TWII"),
+        ("Singapore Exchange (SGX)", "Singapore", "Straits Times Index", "^STI"),
+        ("Bursa Malaysia", "Malaysia", "FTSE Bursa Malaysia KLCI", "^KLSE"),
+        ("Indonesia Stock Exchange (IDX)", "Indonesia", "IDX Composite", "^JKSE"),
+        ("Stock Exchange of Thailand (SET)", "Thailand", "SET Index", "^SET.BK"),
+        ("Philippine Stock Exchange (PSE)", "Philippines", "PSEi", "PSEI.PS"),
+        ("Pakistan Stock Exchange (PSX)", "Pakistan", "KSE-100", "^KSE"),
+        ("Australian Securities Exchange (ASX)", "Australia", "S&P/ASX 200", "^AXJO"),
+        ("NZX", "New Zealand", "S&P/NZX 50", "^NZ50"),
+    ],
+    "Middle East & Africa": [
+        ("Tel Aviv Stock Exchange (TASE)", "Israel", "TA-125", "^TA125.TA"),
+        ("Saudi Exchange (Tadawul)", "Saudi Arabia", "Tadawul All Share (TASI)", "^TASI.SR"),
+        ("Qatar Stock Exchange", "Qatar", "QE Index", "^GNRI.QA"),
+        ("Egyptian Exchange (EGX)", "Egypt", "EGX 30", "^CASE30"),
+        ("Johannesburg Stock Exchange (JSE)", "South Africa", "FTSE/JSE All Share", "^J203.JO"),
+    ],
 }
 
-INDIA_LARGECAP_WATCHLIST = {
-    "Reliance Industries": "RELIANCE.NS",
-    "Tata Consultancy Services": "TCS.NS",
-    "HDFC Bank": "HDFCBANK.NS",
-    "ICICI Bank": "ICICIBANK.NS",
-    "Infosys": "INFY.NS",
-    "Hindustan Unilever": "HINDUNILVR.NS",
-    "ITC": "ITC.NS",
-    "State Bank of India": "SBIN.NS",
-    "Bharti Airtel": "BHARTIARTL.NS",
-    "Kotak Mahindra Bank": "KOTAKBANK.NS",
-    "Larsen & Toubro": "LT.NS",
-    "Asian Paints": "ASIANPAINT.NS",
-    "Axis Bank": "AXISBANK.NS",
-    "Maruti Suzuki": "MARUTI.NS",
-    "Sun Pharma": "SUNPHARMA.NS",
-    "Titan Company": "TITAN.NS",
-    "UltraTech Cement": "ULTRACEMCO.NS",
-    "Wipro": "WIPRO.NS",
-    "Nestle India": "NESTLEIND.NS",
-    "Power Grid Corp": "POWERGRID.NS",
-    "NTPC": "NTPC.NS",
-    "HCL Technologies": "HCLTECH.NS",
-    "Tata Motors": "TATAMOTORS.NS",
-    "Tata Steel": "TATASTEEL.NS",
-    "Bajaj Finserv": "BAJAJFINSV.NS",
-    "IndusInd Bank": "INDUSINDBK.NS",
-    "JSW Steel": "JSWSTEEL.NS",
-    "Grasim Industries": "GRASIM.NS",
-    "Adani Enterprises": "ADANIENT.NS",
-    "Coal India": "COALINDIA.NS",
-}
+EXCHANGE_TABLE = pd.DataFrame(
+    [
+        {
+            "Region": region,
+            "Exchange": exchange,
+            "Country": country,
+            "Benchmark": benchmark,
+            "Symbol": symbol,
+        }
+        for region, rows in EXCHANGES.items()
+        for exchange, country, benchmark, symbol in rows
+    ]
+)
+EXCHANGE_BY_NAME = EXCHANGE_TABLE.set_index("Exchange").to_dict("index")
 
-US_WATCHLIST = {
-    "Apple": "AAPL",
-    "Microsoft": "MSFT",
-    "Alphabet (Google)": "GOOGL",
-    "Amazon": "AMZN",
-    "Nvidia": "NVDA",
-    "Meta Platforms": "META",
-    "Tesla": "TSLA",
-}
-
-ALL_WATCHLISTS = {
-    "NBFC / Lending": NBFC_WATCHLIST,
-    "Indian Large-Cap": INDIA_LARGECAP_WATCHLIST,
-    "US Companies": US_WATCHLIST,
-}
+TABLE_COLUMNS = [
+    "Exchange",
+    "Country",
+    "Benchmark",
+    "Symbol",
+    "Level",
+    "Change %",
+    "Day High",
+    "Day Low",
+    "As of",
+]
 
 INDEX_TICKERS = {
     "Nifty 50": "^NSEI",
@@ -166,35 +202,57 @@ CHART_RANGES = {
 # missing field should degrade to an empty/NA result, never crash the page.
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=60)
-def fetch_watchlist(tickers: dict) -> pd.DataFrame:
+def _quotes_from_download(raw: pd.DataFrame, symbols) -> pd.DataFrame:
+    """Boil a multi-ticker yf.download() frame down to one row per symbol:
+    latest level, change vs the previous close, that session's high/low, and
+    the date of the latest bar (exchanges sit in different time zones, so the
+    'as of' date tells you whether Tokyo is showing today or yesterday)."""
     rows = []
-    for name, symbol in tickers.items():
-        price = prev_close = day_high = day_low = None
+    for symbol in dict.fromkeys(symbols):
+        row = {
+            "Symbol": symbol,
+            "Level": None,
+            "Change %": None,
+            "Day High": None,
+            "Day Low": None,
+            "As of": None,
+        }
         try:
-            info = yf.Ticker(symbol).info
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            prev_close = info.get("previousClose")
-            day_high = info.get("dayHigh")
-            day_low = info.get("dayLow")
+            bars = raw[symbol].dropna(subset=["Close"])
+            if not bars.empty:
+                last = bars.iloc[-1]
+                price = float(last["Close"])
+                row["Level"] = round(price, 2)
+                row["Day High"] = round(float(last["High"]), 2)
+                row["Day Low"] = round(float(last["Low"]), 2)
+                row["As of"] = bars.index[-1].strftime("%d %b")
+                if len(bars) > 1:
+                    prev_close = float(bars["Close"].iloc[-2])
+                    if prev_close:
+                        row["Change %"] = round((price - prev_close) / prev_close * 100, 2)
         except Exception:
             pass
-
-        change_pct = None
-        if price and prev_close:
-            change_pct = (price - prev_close) / prev_close * 100
-
-        rows.append(
-            {
-                "Name": name,
-                "Symbol": symbol,
-                "Price": round(price, 2) if price else None,
-                "Change %": round(change_pct, 2) if change_pct is not None else None,
-                "Day High": day_high,
-                "Day Low": day_low,
-            }
-        )
+        rows.append(row)
     return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=60)
+def fetch_exchange_quotes(symbols: tuple) -> pd.DataFrame:
+    """One batched Yahoo call for every exchange. Looking up 50+ symbols one
+    by one through .info would be slow and invites rate limiting."""
+    try:
+        raw = yf.download(
+            list(symbols),
+            period="1mo",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+        )
+    except Exception:
+        raw = pd.DataFrame()
+    return _quotes_from_download(raw, symbols)
 
 
 @st.cache_data(ttl=60)
@@ -237,45 +295,66 @@ def fetch_history(symbol: str, period: str, interval: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def fetch_fundamentals(symbol: str) -> dict:
+def fetch_exchange_stats(symbol: str) -> dict:
+    """Headline numbers for the deep dive, worked out from a year of daily
+    bars. Indices have no P/E, margins or ROE, and Yahoo's .info is thin for
+    them, so everything here comes straight from price history."""
+    stats = dict.fromkeys(
+        (
+            "price",
+            "prev_close",
+            "day_high",
+            "day_low",
+            "wk52_high",
+            "wk52_low",
+            "volume",
+            "ret_1m",
+            "ret_3m",
+            "ret_6m",
+            "ret_1y",
+        )
+    )
+    hist = fetch_history(symbol, "1y", "1d")
+    if hist.empty or "Close" not in hist.columns:
+        return stats
+
     try:
-        info = yf.Ticker(symbol).info
+        bars = hist.dropna(subset=["Close"])
+        if bars.empty:
+            return stats
+
+        close = bars["Close"]
+        last = bars.iloc[-1]
+        price = float(close.iloc[-1])
+
+        stats["price"] = price
+        stats["prev_close"] = float(close.iloc[-2]) if len(close) > 1 else None
+        stats["day_high"] = float(last["High"])
+        stats["day_low"] = float(last["Low"])
+        stats["wk52_high"] = float(bars["High"].max())
+        stats["wk52_low"] = float(bars["Low"].min())
+
+        volume = last.get("Volume")
+        stats["volume"] = int(volume) if volume and pd.notna(volume) else None
+
+        end = close.index[-1]
+        for key, months in (("ret_1m", 1), ("ret_3m", 3), ("ret_6m", 6)):
+            base = close.asof(end - pd.DateOffset(months=months))
+            if pd.notna(base) and base:
+                stats[key] = (price / base - 1) * 100
+        if close.iloc[0]:
+            stats["ret_1y"] = (price / close.iloc[0] - 1) * 100
     except Exception:
-        info = {}
-    return {
-        "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-        "prev_close": info.get("previousClose"),
-        "day_high": info.get("dayHigh"),
-        "day_low": info.get("dayLow"),
-        "fifty_two_wk_high": info.get("fiftyTwoWeekHigh"),
-        "fifty_two_wk_low": info.get("fiftyTwoWeekLow"),
-        "volume": info.get("volume") or info.get("regularMarketVolume"),
-        "pe_ratio": info.get("trailingPE"),
-        "ev_ebitda": info.get("enterpriseToEbitda"),
-        "profit_margin": info.get("profitMargins"),
-        "roe": info.get("returnOnEquity"),
-    }
-
-
-def get_peers(company_name: str) -> dict:
-    """Other companies in the same watchlist category — a same-category
-    stand-in for true sector peers, which free data doesn't reliably give."""
-    for group in ALL_WATCHLISTS.values():
-        if company_name in group:
-            return {k: v for k, v in group.items() if k != company_name}
-    return {}
-
-
-def _fmt_pct(x):
-    return f"{x * 100:.1f}%" if isinstance(x, (int, float)) else "—"
-
-
-def _fmt_ratio(x):
-    return f"{x:.2f}" if isinstance(x, (int, float)) else "—"
+        pass
+    return stats
 
 
 def _fmt_num(x):
-    return f"{x:,.2f}" if isinstance(x, (int, float)) else "—"
+    return f"{x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else "—"
+
+
+def _fmt_signed_pct(x):
+    return f"{x:+.2f}%" if isinstance(x, (int, float)) and pd.notna(x) else "—"
 
 
 # ---------------------------------------------------------------------------
@@ -292,11 +371,14 @@ def render_price_chart(symbol: str, period: str, interval: str, chart_type: str)
         )
         return
 
+    # Most indices report no volume at all; skip the empty panel for those.
+    has_volume = "Volume" in hist.columns and hist["Volume"].fillna(0).sum() > 0
+
     fig = make_subplots(
-        rows=2,
+        rows=2 if has_volume else 1,
         cols=1,
         shared_xaxes=True,
-        row_heights=[0.75, 0.25],
+        row_heights=[0.75, 0.25] if has_volume else [1.0],
         vertical_spacing=0.03,
     )
 
@@ -328,7 +410,7 @@ def render_price_chart(symbol: str, period: str, interval: str, chart_type: str)
             col=1,
         )
 
-    if "Volume" in hist.columns:
+    if has_volume:
         fig.add_trace(
             go.Bar(x=hist.index, y=hist["Volume"], marker_color="#4a5568", name="Volume"),
             row=2,
@@ -348,24 +430,26 @@ def render_price_chart(symbol: str, period: str, interval: str, chart_type: str)
 
 
 # ---------------------------------------------------------------------------
-# Company deep-dive panel
+# Exchange deep-dive panel
 # ---------------------------------------------------------------------------
 
-def render_company_detail(company_name: str, symbol: str):
-    f = fetch_fundamentals(symbol)
+def render_exchange_detail(name: str, table: pd.DataFrame):
+    meta = EXCHANGE_BY_NAME[name]
+    symbol = meta["Symbol"]
+    s = fetch_exchange_stats(symbol)
 
     change_pct = None
-    if f["price"] and f["prev_close"]:
-        change_pct = (f["price"] - f["prev_close"]) / f["prev_close"] * 100
+    if s["price"] and s["prev_close"]:
+        change_pct = (s["price"] - s["prev_close"]) / s["prev_close"] * 100
 
-    st.subheader(f"{company_name}  ·  {symbol}")
+    st.subheader(name)
+    st.caption(f"{meta['Benchmark']} ({symbol}), {meta['Country']}")
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Price", _fmt_num(f["price"]), f"{change_pct:.2f}%" if change_pct is not None else None)
-    m2.metric("Day Range", f"{_fmt_num(f['day_low'])} – {_fmt_num(f['day_high'])}")
-    m3.metric("52-Wk Range", f"{_fmt_num(f['fifty_two_wk_low'])} – {_fmt_num(f['fifty_two_wk_high'])}")
-    m4.metric("Volume", f"{f['volume']:,}" if isinstance(f["volume"], (int, float)) else "—")
-    m5.metric("P/E Ratio", _fmt_ratio(f["pe_ratio"]))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Index Level", _fmt_num(s["price"]), f"{change_pct:.2f}%" if change_pct is not None else None)
+    m2.metric("Day Range", f"{_fmt_num(s['day_low'])} – {_fmt_num(s['day_high'])}")
+    m3.metric("52-Wk Range", f"{_fmt_num(s['wk52_low'])} – {_fmt_num(s['wk52_high'])}")
+    m4.metric("Volume", f"{s['volume']:,}" if s["volume"] else "—")
 
     c1, c2 = st.columns([3, 1])
     with c1:
@@ -380,25 +464,26 @@ def render_company_detail(company_name: str, symbol: str):
     period, interval = CHART_RANGES[range_choice]
     render_price_chart(symbol, period, interval, chart_type)
 
-    v1, v2, v3 = st.columns(3)
-    v1.metric("EV / EBITDA", _fmt_ratio(f["ev_ebitda"]))
-    v2.metric("Profit Margin", _fmt_pct(f["profit_margin"]))
-    v3.metric("Return on Equity", _fmt_pct(f["roe"]))
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("1 Month", _fmt_signed_pct(s["ret_1m"]))
+    r2.metric("3 Months", _fmt_signed_pct(s["ret_3m"]))
+    r3.metric("6 Months", _fmt_signed_pct(s["ret_6m"]))
+    r4.metric("1 Year", _fmt_signed_pct(s["ret_1y"]))
 
     st.markdown("**Peer Comparison**")
-    peers = get_peers(company_name)
-    if not peers:
-        st.caption("No peers found in the current watchlists.")
+    peers = table[(table["Region"] == meta["Region"]) & (table["Exchange"] != name)]
+    peers = peers.dropna(subset=["Level"])
+    if peers.empty:
+        st.caption("No other exchanges in this region are reporting data right now.")
     else:
-        peer_df = fetch_watchlist(peers)
         st.dataframe(
-            peer_df[["Name", "Symbol", "Price", "Change %"]],
+            peers[["Exchange", "Benchmark", "Symbol", "Level", "Change %"]],
             width="stretch",
             hide_index=True,
         )
     st.caption(
-        "Peers shown are other companies in the same watchlist category, "
-        "not a verified sector match — a reasonable free-data approximation."
+        f"Peers are the other exchanges in {meta['Region']}, not a statistical "
+        "peer set."
     )
 
 
@@ -410,7 +495,7 @@ if AUTOREFRESH_AVAILABLE:
     st_autorefresh(interval=60_000, key="data_refresh")
 
 st.title("📊 Tradeloop")
-st.caption("NBFC & Private-Credit Terminal")
+st.caption("Global Stock Exchange Terminal")
 st.caption(
     f"Last refreshed: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}"
     + ("  ·  auto-updates every 60s" if AUTOREFRESH_AVAILABLE else "")
@@ -428,22 +513,39 @@ for col, (name, ticker) in zip(idx_cols, INDEX_TICKERS.items()):
 
 st.divider()
 
-col_watchlist, col_feed = st.columns([2, 1])
+col_exchanges, col_feed = st.columns([2, 1])
 
-with col_watchlist:
-    st.subheader("Watchlists")
-    tabs = st.tabs(list(ALL_WATCHLISTS.keys()))
-    for tab, (group_name, group) in zip(tabs, ALL_WATCHLISTS.items()):
+with col_exchanges:
+    st.subheader("Stock Exchanges")
+
+    quotes = fetch_exchange_quotes(tuple(EXCHANGE_TABLE["Symbol"]))
+    all_exchanges = EXCHANGE_TABLE.merge(quotes, on="Symbol", how="left")
+    live_count = int(all_exchanges["Level"].notna().sum())
+
+    hide_empty = st.checkbox("Hide exchanges with no data", value=True)
+    st.caption(f"{live_count} of {len(all_exchanges)} exchanges reporting")
+
+    if live_count == 0:
+        st.warning(
+            "Yahoo Finance returned no quotes just now, which is usually a "
+            "brief rate limit or connection issue. Reload in a minute."
+        )
+
+    shown = all_exchanges.dropna(subset=["Level"]) if hide_empty else all_exchanges
+
+    tab_labels = ["All Exchanges", *EXCHANGES.keys()]
+    for tab, label in zip(st.tabs(tab_labels), tab_labels):
         with tab:
-            df = fetch_watchlist(group)
-            st.dataframe(
-                df,
-                width="stretch",
-                hide_index=True,
-            )
+            if label == "All Exchanges":
+                view = shown[["Region", *TABLE_COLUMNS]]
+            else:
+                view = shown[shown["Region"] == label][TABLE_COLUMNS]
+            st.dataframe(view, width="stretch", hide_index=True)
+
     st.caption(
         "Source: Yahoo Finance via yfinance — delayed quotes, fine for a "
-        "dashboard, not for execution."
+        "dashboard, not for execution. Each exchange is shown through its "
+        "benchmark index, so levels are index points, not prices."
     )
 
 with col_feed:
@@ -466,14 +568,10 @@ with col_feed:
 
 st.divider()
 
-# --- Company deep-dive ---
-st.subheader("🔍 Company Deep Dive")
-all_companies = {}
-for group in ALL_WATCHLISTS.values():
-    all_companies.update(group)
-
-selected_company = st.selectbox(
-    "Select a company", list(all_companies.keys()), key="deep_dive_select"
+# --- Exchange deep-dive ---
+st.subheader("🔍 Exchange Deep Dive")
+selected_exchange = st.selectbox(
+    "Select an exchange", list(EXCHANGE_BY_NAME.keys()), key="deep_dive_select"
 )
-if selected_company:
-    render_company_detail(selected_company, all_companies[selected_company])
+if selected_exchange:
+    render_exchange_detail(selected_exchange, all_exchanges)
