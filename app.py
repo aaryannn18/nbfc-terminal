@@ -344,7 +344,7 @@ def render_price_chart(symbol: str, period: str, interval: str, chart_type: str)
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis_rangeslider_visible=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +393,7 @@ def render_company_detail(company_name: str, symbol: str):
         peer_df = fetch_watchlist(peers)
         st.dataframe(
             peer_df[["Name", "Symbol", "Price", "Change %"]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     st.caption(
@@ -436,15 +436,9 @@ with col_watchlist:
     for tab, (group_name, group) in zip(tabs, ALL_WATCHLISTS.items()):
         with tab:
             df = fetch_watchlist(group)
-
-            def _highlight_change(val):
-                if pd.isna(val):
-                    return ""
-                return "color: #26a69a" if val >= 0 else "color: #ef5350"
-
             st.dataframe(
-                df.style.map(_highlight_change, subset=["Change %"]),
-                use_container_width=True,
+                df,
+                width="stretch",
                 hide_index=True,
             )
     st.caption(
