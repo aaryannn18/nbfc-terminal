@@ -1,10 +1,14 @@
 """
-Tradeloop — v2
+Tradeloop — v3
 --------------
-A dark, data-dense dashboard covering stock exchanges around the world, two
-headline indices, RBI regulatory updates plus worldwide market news, and a
-per-exchange deep-dive view (price history in multiple timeframes and chart
-types, trailing returns, the companies listed on each exchange, and a regional peer table).
+A dark, data-dense dashboard covering stock exchanges around the world. The
+centerpiece is one shared chart workspace (search box, candlestick/line
+chart with SMA/RSI/MACD, a plain-English key-facts readout, and valuation
+ratios for companies) fed by clickable watchlists throughout the app —
+TradingView-style, built from Streamlit's own widgets rather than copying
+TradingView's exact look. Below that: exchange tables, worldwide news, and
+a per-exchange deep dive (trailing returns, that exchange's companies as a
+clickable watchlist, and a regional peer table).
 
 Data sources (all free):
   - Yahoo Finance (via yfinance) for quotes and history
@@ -67,6 +71,22 @@ st.markdown(
     section[data-testid="stSidebar"] { background-color: #131722; }
     h1, h2, h3 { font-weight: 700; letter-spacing: -0.3px; }
     .stTabs [data-baseweb="tab"] { font-weight: 500; font-size: 0.95rem; }
+
+    /* Watchlist rows: plain Streamlit buttons re-styled as flat,
+       left-aligned list rows instead of boxed buttons. */
+    div.stButton > button {
+        background-color: transparent;
+        border: none;
+        color: #d1d4dc;
+        text-align: left;
+        font-weight: 500;
+        padding: 2px 6px;
+    }
+    div.stButton > button:hover {
+        color: #42a5f5;
+        background-color: rgba(255, 255, 255, 0.06);
+        border: none;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -414,6 +434,39 @@ EXCHANGE_TABLE = pd.DataFrame(
 )
 EXCHANGE_BY_NAME = EXCHANGE_TABLE.set_index("Exchange").to_dict("index")
 
+# ---------------------------------------------------------------------------
+# One flat lookup of everything chartable — every exchange benchmark plus
+# every listed company — so a single search box and a single chart can
+# cover the whole app (TradingView-style: one chart, many ways to pick a
+# symbol for it), instead of a separate chart per screen.
+# ---------------------------------------------------------------------------
+
+SYMBOL_UNIVERSE: dict[str, dict] = {}
+for _, _row in EXCHANGE_TABLE.iterrows():
+    SYMBOL_UNIVERSE[_row["Symbol"]] = {
+        "name": _row["Benchmark"],
+        "kind": "Index",
+        "exchange": _row["Exchange"],
+        "region": _row["Region"],
+    }
+for _exchange, _rows in LISTED_COMPANIES.items():
+    _region = EXCHANGE_BY_NAME.get(_exchange, {}).get("Region", "")
+    for _company, _sym in _rows:
+        SYMBOL_UNIVERSE[_sym] = {
+            "name": _company,
+            "kind": "Stock",
+            "exchange": _exchange,
+            "region": _region,
+        }
+
+DEFAULT_ACTIVE_SYMBOL = "AAPL"
+
+# A short, curated watchlist for the sidebar — a handful of major indices
+# spanning every region, not an exhaustive list (the "Stock Exchanges"
+# tables further down already cover everything).
+CURATED_INDEX_WATCHLIST = ["^IXIC", "^NYA", "^FTSE", "^N225", "^HSI", "^NSEI", "^GDAXI", "^AXJO"]
+DEFAULT_STOCK_WATCHLIST = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]
+
 TABLE_COLUMNS = [
     "Exchange",
     "Country",
@@ -425,11 +478,6 @@ TABLE_COLUMNS = [
     "Day Low",
     "As of",
 ]
-
-INDEX_TICKERS = {
-    "Nifty 50": "^NSEI",
-    "NASDAQ Composite": "^IXIC",
-}
 
 NEWS_FEEDS = {
     "RBI — Notifications / Circulars": "https://rbi.org.in/notifications_rss.xml",
@@ -904,101 +952,150 @@ def render_price_chart(
 # Exchange deep-dive panel
 # ---------------------------------------------------------------------------
 
-def render_companies(name: str, hide_empty: bool):
-    """Companies listed on one exchange. Only fetched when that exchange is
-    selected, so the page never looks up every company at once."""
-    st.markdown(f"**Companies listed on {name}**")
-    rows = LISTED_COMPANIES.get(name, [])
-    if not rows:
-        st.caption(
-            "No companies added for this exchange yet. Add them to "
-            "LISTED_COMPANIES at the top of this file."
-        )
+def render_watchlist_group(title: str, symbol_keys: list, context: str):
+    """A short, clickable watchlist: Name | Last | Chg%, TradingView-sidebar
+    style. Clicking a row loads that symbol into the one shared chart
+    (render_active_chart) via st.session_state — there's no second chart
+    hiding behind each list, just different ways to pick a symbol for the
+    same one."""
+    st.markdown(f"**{title}**")
+    symbol_keys = [s for s in dict.fromkeys(symbol_keys) if s in SYMBOL_UNIVERSE]
+    if not symbol_keys:
+        st.caption("No symbols configured.")
         return
 
-    companies = pd.DataFrame(rows, columns=["Company", "Symbol"])
-    quotes = fetch_quotes(tuple(companies["Symbol"]))
-    table = companies.merge(quotes, on="Symbol", how="left")
-    table = table.rename(columns={"Level": "Price"})
-
-    reporting = int(table["Price"].notna().sum())
-    st.caption(
-        f"{reporting} of {len(table)} reporting  ·  prices are in each company's "
-        "local currency (London quotes are in pence)"
-    )
-    if hide_empty:
-        table = table[table["Price"].notna()]
-    if table.empty:
-        st.caption("Yahoo returned no quotes for these companies just now.")
-        return
-
-    st.dataframe(
-        table[["Company", "Symbol", "Price", "Change %", "Day High", "Day Low", "As of"]],
-        width="stretch",
-        hide_index=True,
-    )
+    quotes = fetch_quotes(tuple(symbol_keys)).set_index("Symbol").to_dict("index")
+    hcols = st.columns([3, 2, 2])
+    hcols[1].caption("Last")
+    hcols[2].caption("Chg %")
+    for key in symbol_keys:
+        meta = SYMBOL_UNIVERSE[key]
+        q = quotes.get(key, {})
+        row = st.columns([3, 2, 2])
+        active = key == st.session_state.get("active_symbol")
+        label = f"● {meta['name']}" if active else meta["name"]
+        if row[0].button(label, key=f"wl_{context}_{key}"):
+            st.session_state.active_symbol = key
+            st.rerun()
+        row[1].write(_fmt_num(q.get("Level")))
+        row[2].write(_fmt_signed_pct(q.get("Change %")))
 
 
-def render_company_insights(company_name: str, symbol: str):
-    """Full research panel for one company: snapshot sentence, valuation
-    ratios, and a price chart with moving averages / RSI / MACD. Only runs
-    for the single company the person picks, so it stays to one .info()
-    call rather than looping every listed company."""
-    fundamentals = fetch_company_fundamentals(symbol)
+def render_active_chart():
+    """The one big chart the whole app shares. Whatever symbol is active —
+    picked from the search box, a watchlist row, or an exchange's company
+    list — renders here: price header, chart with optional SMA/RSI/MACD,
+    a plain-English key-facts readout, and (for a company) valuation
+    ratios from one .info() lookup."""
+    symbol = st.session_state.get("active_symbol", DEFAULT_ACTIVE_SYMBOL)
+    meta = SYMBOL_UNIVERSE.get(symbol)
+    if meta is None:
+        symbol, meta = DEFAULT_ACTIVE_SYMBOL, SYMBOL_UNIVERSE[DEFAULT_ACTIVE_SYMBOL]
+        st.session_state.active_symbol = symbol
+    is_company = meta["kind"] == "Stock"
+
+    fundamentals = fetch_company_fundamentals(symbol) if is_company else {}
     stats = fetch_exchange_stats(symbol)
     hist = fetch_history(symbol, "1y", "1d")
     indicators = compute_indicators(hist)
 
-    st.markdown(f"#### {company_name} ({symbol})")
-    if fundamentals.get("sector"):
-        st.caption(f"{fundamentals.get('sector', '—')} · {fundamentals.get('industry', '—')}")
+    change_pct = None
+    if stats["price"] and stats["prev_close"]:
+        change_pct = (stats["price"] - stats["prev_close"]) / stats["prev_close"] * 100
 
-    st.info(generate_snapshot(company_name, stats, indicators, fundamentals))
+    st.markdown(f"#### {meta['name']}  ·  `{symbol}`  ·  {meta['exchange']}")
 
-    currency = fundamentals.get("currency") or ""
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric("Market Cap", _fmt_large(fundamentals.get("marketCap"), currency))
-    f1.metric("P/E (TTM)", _fmt_num(fundamentals.get("trailingPE")))
-    f2.metric("Forward P/E", _fmt_num(fundamentals.get("forwardPE")))
-    f2.metric("EPS (TTM)", _fmt_num(fundamentals.get("trailingEps")))
-    f3.metric("Dividend Yield", _fmt_frac_pct(fundamentals.get("dividendYield")))
-    f3.metric("Beta", _fmt_num(fundamentals.get("beta")))
-    f4.metric("Profit Margin", _fmt_frac_pct(fundamentals.get("profitMargins")))
-    f4.metric("Return on Equity", _fmt_frac_pct(fundamentals.get("returnOnEquity")))
-
-    g1, g2, g3 = st.columns(3)
-    g1.metric("Debt / Equity", _fmt_num(fundamentals.get("debtToEquity")))
-    g2.metric("52-Wk High", _fmt_num(fundamentals.get("fiftyTwoWeekHigh")))
-    g3.metric("52-Wk Low", _fmt_num(fundamentals.get("fiftyTwoWeekLow")))
-
-    if all(fundamentals.get(f) is None for f in ("trailingPE", "marketCap", "trailingEps")):
-        st.caption(
-            "Yahoo Finance has little or no fundamentals data for this "
-            "ticker — common for smaller/less-covered exchanges."
-        )
+    h1, h2, h3 = st.columns(3)
+    h1.metric("Price", _fmt_num(stats["price"]), f"{change_pct:+.2f}%" if change_pct is not None else None)
+    avg_vol = None
+    if not hist.empty and "Volume" in hist.columns:
+        recent_vol = hist["Volume"].dropna().tail(30)
+        avg_vol = recent_vol.mean() if not recent_vol.empty else None
+    h2.metric("Volume", f"{int(stats['volume']):,}" if stats["volume"] else "—")
+    h3.metric("Avg Volume (30D)", f"{int(avg_vol):,}" if avg_vol else "—")
 
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         range_choice = st.radio(
-            "Range", list(CHART_RANGES.keys()), horizontal=True, index=3,
-            key=f"range_company_{symbol}",
+            "Range", list(CHART_RANGES.keys()), horizontal=True, index=3, key="range_active"
         )
     with c2:
-        chart_type = st.radio(
-            "Chart", ["Candlestick", "Line"], horizontal=True, key=f"type_company_{symbol}"
-        )
+        chart_type = st.radio("Chart", ["Candlestick", "Line"], horizontal=True, key="type_active")
     with c3:
-        show_indicators = st.checkbox(
-            "Indicators (SMA/RSI/MACD)", value=True, key=f"ind_company_{symbol}"
-        )
+        show_indicators = st.checkbox("Indicators", value=True, key="ind_active")
 
     period, interval = CHART_RANGES[range_choice]
     render_price_chart(symbol, period, interval, chart_type, show_indicators)
+
+    st.markdown("**Key Facts**")
+    st.info(generate_snapshot(meta["name"], stats, indicators, fundamentals if is_company else None))
+
+    if is_company:
+        currency = fundamentals.get("currency") or ""
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric("Market Cap", _fmt_large(fundamentals.get("marketCap"), currency))
+        f1.metric("P/E (TTM)", _fmt_num(fundamentals.get("trailingPE")))
+        f2.metric("Forward P/E", _fmt_num(fundamentals.get("forwardPE")))
+        f2.metric("EPS (TTM)", _fmt_num(fundamentals.get("trailingEps")))
+        f3.metric("Dividend Yield", _fmt_frac_pct(fundamentals.get("dividendYield")))
+        f3.metric("Beta", _fmt_num(fundamentals.get("beta")))
+        f4.metric("Profit Margin", _fmt_frac_pct(fundamentals.get("profitMargins")))
+        f4.metric("Sector", fundamentals.get("sector") or "—")
+        if all(fundamentals.get(f) is None for f in ("trailingPE", "marketCap", "trailingEps")):
+            st.caption(
+                "Yahoo Finance has little or no fundamentals data for this "
+                "ticker — common for smaller/less-covered exchanges."
+            )
+    else:
+        st.caption(f"{meta['exchange']} benchmark index — an index level, not one company's price.")
+
     st.caption(
-        "Snapshot and indicators are computed directly from the price/"
+        "Key Facts and indicators are computed directly from the price/"
         "fundamentals data above — a plain-English readout, not investment "
         "advice or an AI opinion."
     )
+
+
+def render_chart_workspace():
+    """Top-of-app workspace: search box + big chart on the left, a short
+    clickable watchlist on the right — the TradingView-style layout, built
+    from Streamlit's own widgets rather than copying TradingView's exact
+    look."""
+    st.session_state.setdefault("active_symbol", DEFAULT_ACTIVE_SYMBOL)
+
+    symbol_options = sorted(SYMBOL_UNIVERSE, key=lambda s: SYMBOL_UNIVERSE[s]["name"])
+    labels = {
+        s: f"{SYMBOL_UNIVERSE[s]['name']} ({s}) · {SYMBOL_UNIVERSE[s]['exchange']}"
+        for s in symbol_options
+    }
+    current = st.session_state.active_symbol
+    if current not in SYMBOL_UNIVERSE:
+        current = DEFAULT_ACTIVE_SYMBOL
+    chosen = st.selectbox(
+        "🔍 Search a symbol (index or company)",
+        symbol_options,
+        index=symbol_options.index(current),
+        format_func=lambda s: labels[s],
+    )
+    if chosen != st.session_state.active_symbol:
+        st.session_state.active_symbol = chosen
+
+    main_col, side_col = st.columns([3, 1])
+    with main_col:
+        render_active_chart()
+    with side_col:
+        render_watchlist_group("INDICES", CURATED_INDEX_WATCHLIST, "idx")
+        st.markdown("")
+        active_meta = SYMBOL_UNIVERSE[st.session_state.active_symbol]
+        if active_meta["kind"] == "Stock":
+            peers = [
+                sym for _, sym in LISTED_COMPANIES.get(active_meta["exchange"], [])
+                if sym != st.session_state.active_symbol
+            ][:7]
+            stock_list = [st.session_state.active_symbol] + peers
+        else:
+            stock_list = DEFAULT_STOCK_WATCHLIST
+        render_watchlist_group("STOCKS", stock_list, "stk")
 
 
 def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
@@ -1019,32 +1116,27 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
     m3.metric("52-Wk Range", f"{_fmt_num(s['wk52_low'])} – {_fmt_num(s['wk52_high'])}")
     m4.metric("Volume", f"{s['volume']:,}" if s["volume"] else "—")
 
-    render_companies(name, hide_empty)
-
-    c1, c2, c3 = st.columns([2, 1, 1])
-    with c1:
-        range_choice = st.radio(
-            "Range", list(CHART_RANGES.keys()), horizontal=True, index=3, key=f"range_{symbol}"
-        )
-    with c2:
-        chart_type = st.radio(
-            "Chart", ["Candlestick", "Line"], horizontal=True, key=f"type_{symbol}"
-        )
-    with c3:
-        show_indicators = st.checkbox(
-            "Indicators (SMA/RSI/MACD)", value=False, key=f"ind_{symbol}"
-        )
-
-    period, interval = CHART_RANGES[range_choice]
-    render_price_chart(symbol, period, interval, chart_type, show_indicators)
-
-    st.info(generate_snapshot(name, s, compute_indicators(fetch_history(symbol, "1y", "1d"))))
-
     r1, r2, r3, r4 = st.columns(4)
     r1.metric("1 Month", _fmt_signed_pct(s["ret_1m"]))
     r2.metric("3 Months", _fmt_signed_pct(s["ret_3m"]))
     r3.metric("6 Months", _fmt_signed_pct(s["ret_6m"]))
     r4.metric("1 Year", _fmt_signed_pct(s["ret_1y"]))
+
+    if st.button(f"📈 View {meta['Benchmark']} on the main chart above", key=f"viewidx_{symbol}"):
+        st.session_state.active_symbol = symbol
+        st.rerun()
+
+    companies = LISTED_COMPANIES.get(name, [])
+    if companies:
+        render_watchlist_group(
+            f"Companies listed on {name}", [sym for _, sym in companies], f"exch_{symbol}"
+        )
+        st.caption("Click a company to load its full research panel into the chart above.")
+    else:
+        st.caption(
+            "No companies added for this exchange yet. Add them to "
+            "LISTED_COMPANIES at the top of this file."
+        )
 
     st.markdown("**Peer Comparison**")
     peers = table[(table["Region"] == meta["Region"]) & (table["Exchange"] != name)]
@@ -1062,16 +1154,6 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
         "peer set."
     )
 
-    companies = LISTED_COMPANIES.get(name, [])
-    if companies:
-        st.markdown("**🔎 Company Insights**")
-        company_names = [c[0] for c in companies]
-        picked = st.selectbox(
-            "Full research panel for", company_names, key=f"company_pick_{symbol}"
-        )
-        picked_symbol = dict(companies)[picked]
-        render_company_insights(picked, picked_symbol)
-
 
 # ---------------------------------------------------------------------------
 # Layout
@@ -1087,22 +1169,15 @@ st.caption(
     + ("  ·  auto-updates every 60s" if AUTOREFRESH_AVAILABLE else "")
 )
 
-# --- Headline indices ---
-idx_cols = st.columns(len(INDEX_TICKERS))
-for col, (name, ticker) in zip(idx_cols, INDEX_TICKERS.items()):
-    price, change_pct = fetch_index_snapshot(ticker)
-    col.metric(
-        name,
-        _fmt_num(price),
-        f"{change_pct:.2f}%" if change_pct is not None else None,
-    )
+# --- Live chart workspace (search box, big chart, clickable watchlist) ---
+render_chart_workspace()
 
 st.divider()
 
 col_exchanges, col_feed = st.columns([2, 1])
 
 with col_exchanges:
-    st.subheader("Stock Exchanges")
+    st.subheader("Browse by Exchange")
 
     quotes = fetch_quotes(tuple(EXCHANGE_TABLE["Symbol"]))
     all_exchanges = EXCHANGE_TABLE.merge(quotes, on="Symbol", how="left")
