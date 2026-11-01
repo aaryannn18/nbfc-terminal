@@ -610,6 +610,63 @@ def fetch_exchange_stats(symbol: str) -> dict:
     return stats
 
 
+FUNDAMENTAL_FIELDS = [
+    "marketCap", "trailingPE", "forwardPE", "trailingEps", "dividendYield",
+    "beta", "debtToEquity", "profitMargins", "returnOnEquity",
+    "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "sector", "industry", "currency",
+]
+
+
+@st.cache_data(ttl=300)
+def fetch_company_fundamentals(symbol: str) -> dict:
+    """One .info lookup for a single, user-selected company — never looped
+    over a whole exchange's worth of tickers, which is what rate-limits
+    Yahoo. Smaller/less-covered exchanges often return mostly blanks here;
+    that's Yahoo's coverage gap, not a bug."""
+    try:
+        info = yf.Ticker(symbol).info or {}
+    except Exception:
+        info = {}
+    return {field: info.get(field) for field in FUNDAMENTAL_FIELDS}
+
+
+def compute_indicators(hist: pd.DataFrame) -> dict:
+    """20/50/200-day moving averages, RSI(14) and MACD(12,26,9) from a price
+    history frame. These are the standard free-data technical indicators —
+    nothing here needs a paid feed, just enough history (a 200-day average
+    needs ~200 trading days; shorter histories just show fewer dots)."""
+    if hist.empty or "Close" not in hist.columns:
+        return {}
+    close = hist["Close"]
+
+    sma20 = close.rolling(20).mean()
+    sma50 = close.rolling(50).mean()
+    sma200 = close.rolling(200).mean()
+
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rsi = 100 - (100 / (1 + rs))
+
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+
+    return {
+        "sma20": sma20,
+        "sma50": sma50,
+        "sma200": sma200,
+        "rsi": rsi,
+        "macd": macd_line,
+        "macd_signal": signal_line,
+        "macd_hist": macd_line - signal_line,
+    }
+
+
 def _fmt_num(x):
     return f"{x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else "—"
 
@@ -618,11 +675,91 @@ def _fmt_signed_pct(x):
     return f"{x:+.2f}%" if isinstance(x, (int, float)) and pd.notna(x) else "—"
 
 
+def _fmt_large(x, suffix: str = ""):
+    """1,250,000,000 -> '1.25B'. Used for market cap, which otherwise prints
+    as a wall of digits."""
+    if not isinstance(x, (int, float)) or pd.isna(x):
+        return "—"
+    for unit, divisor in (("T", 1e12), ("B", 1e9), ("M", 1e6)):
+        if abs(x) >= divisor:
+            return f"{x / divisor:,.2f}{unit} {suffix}".strip()
+    return f"{x:,.0f} {suffix}".strip()
+
+
+def _fmt_frac_pct(x):
+    """yfinance reports dividend yield / margins / ROE as a fraction
+    (0.023 == 2.3%), so this multiplies by 100 before formatting."""
+    return f"{x * 100:.2f}%" if isinstance(x, (int, float)) and pd.notna(x) else "—"
+
+
+def generate_snapshot(name: str, stats: dict, indicators: dict, fundamentals: dict | None = None) -> str:
+    """A short, rule-based readout of the numbers already on the page —
+    trend, moving-average position, RSI, and (for companies) valuation.
+    This is NOT AI commentary and NOT a buy/sell call: it only restates what
+    the data already shows, in plain English, so it's worth double-checking
+    the figures above before acting on anything here."""
+    parts = []
+
+    ret_1m = stats.get("ret_1m")
+    if isinstance(ret_1m, (int, float)) and pd.notna(ret_1m):
+        direction = "up" if ret_1m > 0.1 else "down" if ret_1m < -0.1 else "roughly flat"
+        parts.append(f"{name} is {direction} {abs(ret_1m):.1f}% over the past month")
+
+    price = stats.get("price")
+    sma50 = indicators.get("sma50")
+    sma200 = indicators.get("sma200")
+    if price and isinstance(sma50, pd.Series) and not sma50.dropna().empty:
+        last_sma50 = sma50.dropna().iloc[-1]
+        side = "above" if price > last_sma50 else "below"
+        parts.append(f"trading {side} its 50-day average")
+    if price and isinstance(sma200, pd.Series) and not sma200.dropna().empty:
+        last_sma200 = sma200.dropna().iloc[-1]
+        side = "above" if price > last_sma200 else "below"
+        parts.append(f"{side} its 200-day average")
+
+    rsi = indicators.get("rsi")
+    if isinstance(rsi, pd.Series) and not rsi.dropna().empty:
+        last_rsi = rsi.dropna().iloc[-1]
+        if last_rsi >= 70:
+            parts.append(f"RSI is at {last_rsi:.0f}, in overbought territory")
+        elif last_rsi <= 30:
+            parts.append(f"RSI is at {last_rsi:.0f}, in oversold territory")
+        else:
+            parts.append(f"RSI is at {last_rsi:.0f}, a neutral reading")
+
+    macd = indicators.get("macd")
+    macd_signal = indicators.get("macd_signal")
+    if isinstance(macd, pd.Series) and isinstance(macd_signal, pd.Series):
+        m, s = macd.dropna(), macd_signal.dropna()
+        if not m.empty and not s.empty:
+            bias = "bullish" if m.iloc[-1] > s.iloc[-1] else "bearish"
+            parts.append(f"MACD is currently {bias} (line {'above' if bias == 'bullish' else 'below'} signal)")
+
+    if fundamentals:
+        pe = fundamentals.get("trailingPE")
+        if isinstance(pe, (int, float)) and pd.notna(pe):
+            parts.append(f"trades at a trailing P/E of {pe:.1f}")
+        div_yield = fundamentals.get("dividendYield")
+        if isinstance(div_yield, (int, float)) and pd.notna(div_yield) and div_yield > 0:
+            # Newer yfinance sometimes reports this already as a percent
+            # rather than a fraction — treat anything over 1 as already %.
+            pct = div_yield if div_yield > 1 else div_yield * 100
+            parts.append(f"carries a dividend yield of {pct:.2f}%")
+
+    if not parts:
+        return "Not enough data yet to summarize this one — try again in a moment."
+
+    sentence = ", ".join(parts)
+    return sentence[0].upper() + sentence[1:] + "."
+
+
 # ---------------------------------------------------------------------------
 # Chart builder
 # ---------------------------------------------------------------------------
 
-def render_price_chart(symbol: str, period: str, interval: str, chart_type: str):
+def render_price_chart(
+    symbol: str, period: str, interval: str, chart_type: str, show_indicators: bool = False
+):
     hist = fetch_history(symbol, period, interval)
     if hist.empty:
         st.warning(
@@ -634,12 +771,30 @@ def render_price_chart(symbol: str, period: str, interval: str, chart_type: str)
 
     # Most indices report no volume at all; skip the empty panel for those.
     has_volume = "Volume" in hist.columns and hist["Volume"].fillna(0).sum() > 0
+    indicators = compute_indicators(hist) if show_indicators else {}
+
+    # Layout: price (+ SMA overlay) always on row 1; volume only when the
+    # indicator panels are off, to keep a 4-row chart from getting cramped;
+    # RSI and MACD get their own rows underneath when indicators are on.
+    rows = 1
+    row_heights = [1.0]
+    volume_row = None
+    rsi_row = None
+    macd_row = None
+    if show_indicators:
+        rows += 2
+        rsi_row, macd_row = 2, 3
+        row_heights = [0.5, 0.25, 0.25]
+    elif has_volume:
+        rows += 1
+        volume_row = 2
+        row_heights = [0.75, 0.25]
 
     fig = make_subplots(
-        rows=2 if has_volume else 1,
+        rows=rows,
         cols=1,
         shared_xaxes=True,
-        row_heights=[0.75, 0.25] if has_volume else [1.0],
+        row_heights=row_heights,
         vertical_spacing=0.03,
     )
 
@@ -671,20 +826,75 @@ def render_price_chart(symbol: str, period: str, interval: str, chart_type: str)
             col=1,
         )
 
-    if has_volume:
+    if volume_row:
         fig.add_trace(
             go.Bar(x=hist.index, y=hist["Volume"], marker_color="#4a5568", name="Volume"),
-            row=2,
+            row=volume_row,
             col=1,
         )
 
+    if show_indicators and indicators:
+        for key, color, label in (
+            ("sma20", "#42a5f5", "SMA 20"),
+            ("sma50", "#ab47bc", "SMA 50"),
+            ("sma200", "#ffa726", "SMA 200"),
+        ):
+            series = indicators.get(key)
+            if series is not None and not series.dropna().empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=hist.index, y=series, mode="lines",
+                        line=dict(color=color, width=1), name=label,
+                    ),
+                    row=1,
+                    col=1,
+                )
+
+        rsi = indicators.get("rsi")
+        if rsi is not None and not rsi.dropna().empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=hist.index, y=rsi, mode="lines",
+                    line=dict(color="#66bb6a", width=1.2), name="RSI (14)",
+                ),
+                row=rsi_row,
+                col=1,
+            )
+            fig.add_hline(y=70, line_dash="dot", line_color="#ef5350", row=rsi_row, col=1)
+            fig.add_hline(y=30, line_dash="dot", line_color="#26a69a", row=rsi_row, col=1)
+            fig.update_yaxes(range=[0, 100], row=rsi_row, col=1, title_text="RSI")
+
+        macd, macd_signal, macd_hist = (
+            indicators.get("macd"), indicators.get("macd_signal"), indicators.get("macd_hist"),
+        )
+        if macd is not None and not macd.dropna().empty:
+            fig.add_trace(
+                go.Bar(x=hist.index, y=macd_hist, marker_color="#4a5568", name="MACD Hist"),
+                row=macd_row,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(x=hist.index, y=macd, mode="lines",
+                            line=dict(color="#42a5f5", width=1.2), name="MACD"),
+                row=macd_row,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(x=hist.index, y=macd_signal, mode="lines",
+                            line=dict(color="#f0b429", width=1.2), name="Signal"),
+                row=macd_row,
+                col=1,
+            )
+            fig.update_yaxes(title_text="MACD", row=macd_row, col=1)
+
     fig.update_layout(
-        height=480,
+        height=480 if not show_indicators else 680,
         template="plotly_dark",
         paper_bgcolor="#0a0e14",
         plot_bgcolor="#0a0e14",
-        showlegend=False,
-        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=show_indicators,
+        legend=dict(orientation="h", y=1.02, x=0) if show_indicators else None,
+        margin=dict(l=10, r=10, t=30 if show_indicators else 10, b=10),
         xaxis_rangeslider_visible=False,
     )
     st.plotly_chart(fig, width="stretch")
@@ -729,6 +939,68 @@ def render_companies(name: str, hide_empty: bool):
     )
 
 
+def render_company_insights(company_name: str, symbol: str):
+    """Full research panel for one company: snapshot sentence, valuation
+    ratios, and a price chart with moving averages / RSI / MACD. Only runs
+    for the single company the person picks, so it stays to one .info()
+    call rather than looping every listed company."""
+    fundamentals = fetch_company_fundamentals(symbol)
+    stats = fetch_exchange_stats(symbol)
+    hist = fetch_history(symbol, "1y", "1d")
+    indicators = compute_indicators(hist)
+
+    st.markdown(f"#### {company_name} ({symbol})")
+    if fundamentals.get("sector"):
+        st.caption(f"{fundamentals.get('sector', '—')} · {fundamentals.get('industry', '—')}")
+
+    st.info(generate_snapshot(company_name, stats, indicators, fundamentals))
+
+    currency = fundamentals.get("currency") or ""
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("Market Cap", _fmt_large(fundamentals.get("marketCap"), currency))
+    f1.metric("P/E (TTM)", _fmt_num(fundamentals.get("trailingPE")))
+    f2.metric("Forward P/E", _fmt_num(fundamentals.get("forwardPE")))
+    f2.metric("EPS (TTM)", _fmt_num(fundamentals.get("trailingEps")))
+    f3.metric("Dividend Yield", _fmt_frac_pct(fundamentals.get("dividendYield")))
+    f3.metric("Beta", _fmt_num(fundamentals.get("beta")))
+    f4.metric("Profit Margin", _fmt_frac_pct(fundamentals.get("profitMargins")))
+    f4.metric("Return on Equity", _fmt_frac_pct(fundamentals.get("returnOnEquity")))
+
+    g1, g2, g3 = st.columns(3)
+    g1.metric("Debt / Equity", _fmt_num(fundamentals.get("debtToEquity")))
+    g2.metric("52-Wk High", _fmt_num(fundamentals.get("fiftyTwoWeekHigh")))
+    g3.metric("52-Wk Low", _fmt_num(fundamentals.get("fiftyTwoWeekLow")))
+
+    if all(fundamentals.get(f) is None for f in ("trailingPE", "marketCap", "trailingEps")):
+        st.caption(
+            "Yahoo Finance has little or no fundamentals data for this "
+            "ticker — common for smaller/less-covered exchanges."
+        )
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        range_choice = st.radio(
+            "Range", list(CHART_RANGES.keys()), horizontal=True, index=3,
+            key=f"range_company_{symbol}",
+        )
+    with c2:
+        chart_type = st.radio(
+            "Chart", ["Candlestick", "Line"], horizontal=True, key=f"type_company_{symbol}"
+        )
+    with c3:
+        show_indicators = st.checkbox(
+            "Indicators (SMA/RSI/MACD)", value=True, key=f"ind_company_{symbol}"
+        )
+
+    period, interval = CHART_RANGES[range_choice]
+    render_price_chart(symbol, period, interval, chart_type, show_indicators)
+    st.caption(
+        "Snapshot and indicators are computed directly from the price/"
+        "fundamentals data above — a plain-English readout, not investment "
+        "advice or an AI opinion."
+    )
+
+
 def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
     meta = EXCHANGE_BY_NAME[name]
     symbol = meta["Symbol"]
@@ -749,7 +1021,7 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
 
     render_companies(name, hide_empty)
 
-    c1, c2 = st.columns([3, 1])
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         range_choice = st.radio(
             "Range", list(CHART_RANGES.keys()), horizontal=True, index=3, key=f"range_{symbol}"
@@ -758,9 +1030,15 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
         chart_type = st.radio(
             "Chart", ["Candlestick", "Line"], horizontal=True, key=f"type_{symbol}"
         )
+    with c3:
+        show_indicators = st.checkbox(
+            "Indicators (SMA/RSI/MACD)", value=False, key=f"ind_{symbol}"
+        )
 
     period, interval = CHART_RANGES[range_choice]
-    render_price_chart(symbol, period, interval, chart_type)
+    render_price_chart(symbol, period, interval, chart_type, show_indicators)
+
+    st.info(generate_snapshot(name, s, compute_indicators(fetch_history(symbol, "1y", "1d"))))
 
     r1, r2, r3, r4 = st.columns(4)
     r1.metric("1 Month", _fmt_signed_pct(s["ret_1m"]))
@@ -783,6 +1061,16 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
         f"Peers are the other exchanges in {meta['Region']}, not a statistical "
         "peer set."
     )
+
+    companies = LISTED_COMPANIES.get(name, [])
+    if companies:
+        st.markdown("**🔎 Company Insights**")
+        company_names = [c[0] for c in companies]
+        picked = st.selectbox(
+            "Full research panel for", company_names, key=f"company_pick_{symbol}"
+        )
+        picked_symbol = dict(companies)[picked]
+        render_company_insights(picked, picked_symbol)
 
 
 # ---------------------------------------------------------------------------
