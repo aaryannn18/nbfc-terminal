@@ -978,7 +978,37 @@ def render_watchlist_group(title: str, symbol_keys: list, context: str):
             st.session_state.active_symbol = key
             st.rerun()
         row[1].write(_fmt_num(q.get("Level")))
-        row[2].write(_fmt_signed_pct(q.get("Change %")))
+        chg = q.get("Change %")
+        chg_str = _fmt_signed_pct(chg)
+        if isinstance(chg, (int, float)) and pd.notna(chg):
+            row[2].markdown(f":{'green' if chg >= 0 else 'red'}[{chg_str}]")
+        else:
+            row[2].markdown(chg_str)
+
+
+def render_selectable_table(view: pd.DataFrame, key: str):
+    """Same idea as render_watchlist_group, for the big exchange tables:
+    clicking any row loads that exchange's benchmark into the shared chart
+    above. This is what makes every row in these tables — every exchange
+    'marker' — clickable, without a custom HTML table or the pandas
+    .style.map() coloring that caused a blank-dataframe bug here before."""
+    event = st.dataframe(
+        view,
+        width="stretch",
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=key,
+    )
+    try:
+        rows = event.selection["rows"]
+    except Exception:
+        rows = []
+    if rows:
+        picked = view.iloc[rows[0]]["Symbol"]
+        if picked in SYMBOL_UNIVERSE and picked != st.session_state.get("active_symbol"):
+            st.session_state.active_symbol = picked
+            st.rerun()
 
 
 def render_active_chart():
@@ -1004,6 +1034,20 @@ def render_active_chart():
         change_pct = (stats["price"] - stats["prev_close"]) / stats["prev_close"] * 100
 
     st.markdown(f"#### {meta['name']}  ·  `{symbol}`  ·  {meta['exchange']}")
+
+    if not hist.empty:
+        last_bar = hist.dropna(subset=["Close"]).iloc[-1] if "Close" in hist.columns else None
+        if last_bar is not None:
+            change_str = f"{change_pct:+.2f}%" if change_pct is not None else "—"
+            color = "green" if (change_pct or 0) >= 0 else "red"
+            st.markdown(
+                f"O **{_fmt_num(last_bar.get('Open'))}**  "
+                f"H **{_fmt_num(last_bar.get('High'))}**  "
+                f"L **{_fmt_num(last_bar.get('Low'))}**  "
+                f"C **{_fmt_num(last_bar.get('Close'))}**  "
+                f"&nbsp;&nbsp;:{color}[{change_str}]",
+                unsafe_allow_html=True,
+            )
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Price", _fmt_num(stats["price"]), f"{change_pct:+.2f}%" if change_pct is not None else None)
@@ -1144,10 +1188,9 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
     if peers.empty:
         st.caption("No other exchanges in this region are reporting data right now.")
     else:
-        st.dataframe(
+        render_selectable_table(
             peers[["Exchange", "Benchmark", "Symbol", "Level", "Change %"]],
-            width="stretch",
-            hide_index=True,
+            key=f"peers_{symbol}",
         )
     st.caption(
         f"Peers are the other exchanges in {meta['Region']}, not a statistical "
@@ -1201,12 +1244,14 @@ with col_exchanges:
                 view = shown[["Region", *TABLE_COLUMNS]]
             else:
                 view = shown[shown["Region"] == label][TABLE_COLUMNS]
-            st.dataframe(view, width="stretch", hide_index=True)
+            render_selectable_table(view, key=f"table_{label}")
 
     st.caption(
-        "Source: Yahoo Finance via yfinance — delayed quotes, fine for a "
-        "dashboard, not for execution. Each exchange is shown through its "
-        "benchmark index, so levels are index points, not prices."
+        "Click any row to load that exchange's benchmark into the chart "
+        "above. Source: Yahoo Finance via yfinance — delayed quotes, fine "
+        "for a dashboard, not for execution. Each exchange is shown "
+        "through its benchmark index, so levels are index points, not "
+        "prices."
     )
 
 with col_feed:
