@@ -1266,11 +1266,16 @@ with col_feed:
             "top of this file."
         )
     else:
-        for item in items:
-            st.markdown(f"**[{item['title']}]({item['link']})**")
-            if item["published"]:
-                st.caption(item["published"])
-            st.divider()
+        # A fixed-height, internally-scrolling box. Without this, the news
+        # list (often much taller than the exchange table next to it) makes
+        # the whole row that tall, leaving a big blank gap under the
+        # shorter "Browse by Exchange" column once its own content ends.
+        with st.container(height=600):
+            for item in items:
+                st.markdown(f"**[{item['title']}]({item['link']})**")
+                if item["published"]:
+                    st.caption(item["published"])
+                st.divider()
 
 st.divider()
 
