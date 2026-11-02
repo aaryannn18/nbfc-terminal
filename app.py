@@ -944,8 +944,15 @@ def render_price_chart(
         legend=dict(orientation="h", y=1.02, x=0) if show_indicators else None,
         margin=dict(l=10, r=10, t=30 if show_indicators else 10, b=10),
         xaxis_rangeslider_visible=False,
+        dragmode="pan",
     )
-    st.plotly_chart(fig, width="stretch")
+    # TradingView-style navigation: drag to scroll/pan through history,
+    # mouse wheel (or pinch, on a trackpad/touchscreen) to zoom in and out.
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        config={"scrollZoom": True, "displaylogo": False},
+    )
 
 
 # ---------------------------------------------------------------------------
