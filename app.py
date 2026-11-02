@@ -87,6 +87,22 @@ st.markdown(
         background-color: rgba(255, 255, 255, 0.06);
         border: none;
     }
+
+    /* Cosmetic SELL/BUY price pills — display only, not clickable trade
+       buttons (Tradeloop has no brokerage connection). */
+    .price-pill-row { display: flex; gap: 10px; margin: 10px 0 6px 0; }
+    .price-pill {
+        flex: 1;
+        border-radius: 6px;
+        padding: 8px 16px;
+        text-align: center;
+    }
+    .price-pill.sell { background-color: rgba(239, 83, 80, 0.15); border: 1px solid #ef5350; }
+    .price-pill.buy { background-color: rgba(66, 165, 245, 0.15); border: 1px solid #42a5f5; }
+    .price-pill .pill-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.5px; opacity: 0.85; }
+    .price-pill.sell .pill-label { color: #ef5350; }
+    .price-pill.buy .pill-label { color: #42a5f5; }
+    .price-pill .pill-price { font-size: 1.25rem; font-weight: 700; margin-top: 2px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -801,6 +817,48 @@ def generate_snapshot(name: str, stats: dict, indicators: dict, fundamentals: di
     return sentence[0].upper() + sentence[1:] + "."
 
 
+def compute_signal(price, indicators: dict) -> str:
+    """A simple, transparent technical rating — "Buy" / "Sell" / "Hold" —
+    built from the same SMA/RSI/MACD numbers already on the page: one vote
+    each for price vs. its 50- and 200-day average, RSI overbought/oversold,
+    and the MACD/signal crossover. Majority of votes wins; a tie is "Hold".
+    This is a rule-based label, not a recommendation — it can't see
+    news, earnings, or anything outside the price history."""
+    score = 0
+    votes = 0
+
+    for key in ("sma50", "sma200"):
+        series = indicators.get(key)
+        if price and isinstance(series, pd.Series) and not series.dropna().empty:
+            score += 1 if price > series.dropna().iloc[-1] else -1
+            votes += 1
+
+    rsi = indicators.get("rsi")
+    if isinstance(rsi, pd.Series) and not rsi.dropna().empty:
+        last_rsi = rsi.dropna().iloc[-1]
+        if last_rsi <= 30:
+            score += 1
+        elif last_rsi >= 70:
+            score -= 1
+        votes += 1
+
+    macd, macd_signal = indicators.get("macd"), indicators.get("macd_signal")
+    if isinstance(macd, pd.Series) and isinstance(macd_signal, pd.Series):
+        m, s = macd.dropna(), macd_signal.dropna()
+        if not m.empty and not s.empty:
+            score += 1 if m.iloc[-1] > s.iloc[-1] else -1
+            votes += 1
+
+    if votes == 0:
+        return "—"
+    ratio = score / votes
+    if ratio >= 0.5:
+        return "Buy"
+    if ratio <= -0.5:
+        return "Sell"
+    return "Hold"
+
+
 # ---------------------------------------------------------------------------
 # Chart builder
 # ---------------------------------------------------------------------------
@@ -972,13 +1030,14 @@ def render_watchlist_group(title: str, symbol_keys: list, context: str):
         return
 
     quotes = fetch_quotes(tuple(symbol_keys)).set_index("Symbol").to_dict("index")
-    hcols = st.columns([3, 2, 2])
+    hcols = st.columns([3, 2, 2, 1.3])
     hcols[1].caption("Last")
     hcols[2].caption("Chg %")
+    hcols[3].caption("Signal")
     for key in symbol_keys:
         meta = SYMBOL_UNIVERSE[key]
         q = quotes.get(key, {})
-        row = st.columns([3, 2, 2])
+        row = st.columns([3, 2, 2, 1.3])
         active = key == st.session_state.get("active_symbol")
         label = f"● {meta['name']}" if active else meta["name"]
         if row[0].button(label, key=f"wl_{context}_{key}"):
@@ -991,6 +1050,10 @@ def render_watchlist_group(title: str, symbol_keys: list, context: str):
             row[2].markdown(f":{'green' if chg >= 0 else 'red'}[{chg_str}]")
         else:
             row[2].markdown(chg_str)
+
+        signal = compute_signal(q.get("Level"), compute_indicators(fetch_history(key, "1y", "1d")))
+        sig_color = {"Buy": "green", "Sell": "red", "Hold": "gray"}.get(signal, "gray")
+        row[3].markdown(f":{sig_color}[**{signal}**]")
 
 
 def render_selectable_table(view: pd.DataFrame, key: str):
@@ -1056,6 +1119,22 @@ def render_active_chart():
                 unsafe_allow_html=True,
             )
 
+    price_str = _fmt_num(stats["price"])
+    st.markdown(
+        f"""
+        <div class="price-pill-row">
+            <div class="price-pill sell"><div class="pill-label">SELL</div><div class="pill-price">{price_str}</div></div>
+            <div class="price-pill buy"><div class="pill-label">BUY</div><div class="pill-price">{price_str}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Display only — shows the latest price, not a live order book. "
+        "Tradeloop isn't connected to a broker, so these aren't clickable "
+        "trade buttons."
+    )
+
     h1, h2, h3 = st.columns(3)
     h1.metric("Price", _fmt_num(stats["price"]), f"{change_pct:+.2f}%" if change_pct is not None else None)
     avg_vol = None
@@ -1079,6 +1158,9 @@ def render_active_chart():
     render_price_chart(symbol, period, interval, chart_type, show_indicators)
 
     st.markdown("**Key Facts**")
+    signal = compute_signal(stats["price"], indicators)
+    sig_color = {"Buy": "green", "Sell": "red", "Hold": "gray"}.get(signal, "gray")
+    st.markdown(f"Technical rating: :{sig_color}[**{signal}**]")
     st.info(generate_snapshot(meta["name"], stats, indicators, fundamentals if is_company else None))
 
     if is_company:
@@ -1101,9 +1183,11 @@ def render_active_chart():
         st.caption(f"{meta['exchange']} benchmark index — an index level, not one company's price.")
 
     st.caption(
-        "Key Facts and indicators are computed directly from the price/"
-        "fundamentals data above — a plain-English readout, not investment "
-        "advice or an AI opinion."
+        "Key Facts, the technical rating, and the indicators are all "
+        "computed directly from the price/fundamentals data above — a "
+        "plain-English readout, not investment advice or an AI opinion. "
+        "The rating can't see news, earnings, or anything outside the "
+        "price history."
     )
 
 
