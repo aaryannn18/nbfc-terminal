@@ -766,8 +766,14 @@ def fetch_news_feed(url: str, limit: int = 12) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def fetch_history(symbol: str, period: str, interval: str) -> pd.DataFrame:
+    # 10 minutes, not 2: this gets called once per watchlist row (for the
+    # Signal column) on every fragment rerun, so a short ttl means a burst
+    # of real Yahoo Finance calls every minute. Daily-bar history barely
+    # changes within 10 minutes anyway, and intraday chart ranges (1 Day /
+    # 5 Days) still refresh every 10 minutes, which is plenty for a
+    # dashboard that's already upfront about delayed, not real-time, data.
     try:
         hist = yf.Ticker(symbol).history(period=period, interval=interval)
         return hist if hist is not None else pd.DataFrame()
