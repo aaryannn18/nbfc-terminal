@@ -4,3 +4,4 @@ feedparser>=6.0.10
 pandas>=2.0
 plotly>=5.18
 streamlit-autorefresh>=1.0.1
+supabase>=2.3,<3
