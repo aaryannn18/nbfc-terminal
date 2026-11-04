@@ -48,11 +48,11 @@ import yfinance as yf
 from plotly.subplots import make_subplots
 
 try:
-    from streamlit_autorefresh import st_autorefresh
+    from supabase import create_client
 
-    AUTOREFRESH_AVAILABLE = True
+    SUPABASE_SDK_AVAILABLE = True
 except ImportError:
-    AUTOREFRESH_AVAILABLE = False
+    SUPABASE_SDK_AVAILABLE = False
 
 st.set_page_config(page_title="Tradeloop", layout="wide", page_icon="📊")
 
@@ -107,6 +107,114 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ---------------------------------------------------------------------------
+# Accounts (Supabase Auth) — free, real email/password accounts, not just a
+# shared password gate. Needs two secrets set in Streamlit Cloud (Manage
+# app -> Settings -> Secrets), from a free project at supabase.com:
+#
+#     SUPABASE_URL = "https://xxxxxxxx.supabase.co"
+#     SUPABASE_ANON_KEY = "ey...."
+#
+# Both are on the project's Settings -> API page. By default Supabase
+# emails new users a confirmation link before they can log in — fine for a
+# real launch, but for testing you can turn it off under Authentication ->
+# Providers -> Email -> "Confirm email".
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def get_supabase_client():
+    url = st.secrets.get("SUPABASE_URL") if hasattr(st, "secrets") else None
+    key = st.secrets.get("SUPABASE_ANON_KEY") if hasattr(st, "secrets") else None
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def require_login():
+    """Blocks the rest of the app behind a Log In / Register screen. Must
+    run before anything else draws, so a signed-out visitor never sees the
+    dashboard (or triggers any of its Yahoo Finance calls)."""
+    if st.session_state.get("user_email"):
+        return  # already signed in this session
+
+    if not SUPABASE_SDK_AVAILABLE:
+        st.error(
+            "Accounts aren't set up yet — add `supabase` to requirements.txt "
+            "and redeploy."
+        )
+        st.stop()
+
+    client = get_supabase_client()
+    if client is None:
+        st.error(
+            "Accounts aren't configured yet — add SUPABASE_URL and "
+            "SUPABASE_ANON_KEY under this app's Settings -> Secrets on "
+            "Streamlit Cloud, then reload."
+        )
+        st.stop()
+
+    st.title("📊 Tradeloop")
+    st.caption("Sign in or create a free account to continue.")
+
+    tab_login, tab_register = st.tabs(["Log In", "Register"])
+
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Log In")
+        if submitted:
+            try:
+                result = client.auth.sign_in_with_password(
+                    {"email": email, "password": password}
+                )
+                st.session_state.user_email = result.user.email
+                st.session_state.user_id = result.user.id
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Couldn't log in: {exc}")
+
+    with tab_register:
+        st.caption("Takes a few seconds — just an email and a password.")
+        with st.form("register_form"):
+            reg_email = st.text_input("Email", key="register_email")
+            reg_password = st.text_input(
+                "Password (min. 6 characters)", type="password", key="register_password"
+            )
+            reg_submitted = st.form_submit_button("Create Account")
+        if reg_submitted:
+            if "@" not in reg_email:
+                st.error("Enter a valid email address.")
+            elif len(reg_password) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                try:
+                    result = client.auth.sign_up(
+                        {"email": reg_email, "password": reg_password}
+                    )
+                    if result.session is not None:
+                        # Email confirmation is off for this project —
+                        # signed in immediately.
+                        st.session_state.user_email = result.user.email
+                        st.session_state.user_id = result.user.id
+                        st.rerun()
+                    else:
+                        st.success(
+                            "Account created — check your email for a "
+                            "confirmation link, then log in from the Log "
+                            "In tab."
+                        )
+                except Exception as exc:
+                    st.error(f"Couldn't create that account: {exc}")
+
+    st.stop()
+
+
+require_login()
 
 # ---------------------------------------------------------------------------
 # Config — one line per exchange:
@@ -1293,92 +1401,115 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
 # Layout
 # ---------------------------------------------------------------------------
 
-if AUTOREFRESH_AVAILABLE:
-    st_autorefresh(interval=60_000, key="data_refresh")
+with st.sidebar:
+    st.caption(f"Signed in as **{st.session_state.get('user_email', '')}**")
+    if st.button("Log out"):
+        client = get_supabase_client()
+        if client is not None:
+            try:
+                client.auth.sign_out()
+            except Exception:
+                pass
+        for key in ("user_email", "user_id"):
+            st.session_state.pop(key, None)
+        st.rerun()
 
-st.title("📊 Tradeloop")
-st.caption("Global Stock Exchange Terminal")
-st.caption(
-    f"Last refreshed: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}"
-    + ("  ·  auto-updates every 60s" if AUTOREFRESH_AVAILABLE else "")
-)
-
-# --- Live chart workspace (search box, big chart, clickable watchlist) ---
-render_chart_workspace()
-
-st.divider()
-
-col_exchanges, col_feed = st.columns([2, 1])
-
-with col_exchanges:
-    st.subheader("Browse by Exchange")
-
-    quotes = fetch_quotes(tuple(EXCHANGE_TABLE["Symbol"]))
-    all_exchanges = EXCHANGE_TABLE.merge(quotes, on="Symbol", how="left")
-    live_count = int(all_exchanges["Level"].notna().sum())
-
-    hide_empty = st.checkbox("Hide rows with no data", value=True)
-    st.caption(f"{live_count} of {len(all_exchanges)} exchanges reporting")
-
-    if live_count == 0:
-        st.warning(
-            "Yahoo Finance returned no quotes just now, which is usually a "
-            "brief rate limit or connection issue. Reload in a minute."
-        )
-
-    shown = all_exchanges.dropna(subset=["Level"]) if hide_empty else all_exchanges
-
-    tab_labels = ["All Exchanges", *EXCHANGES.keys()]
-    for tab, label in zip(st.tabs(tab_labels), tab_labels):
-        with tab:
-            if label == "All Exchanges":
-                view = shown[["Region", *TABLE_COLUMNS]]
-            else:
-                view = shown[shown["Region"] == label][TABLE_COLUMNS]
-            render_selectable_table(view, key=f"table_{label}")
-
+@st.fragment(run_every=60)
+def render_dashboard():
+    """Everything below the sidebar, on its own 60-second auto-refresh.
+    st.fragment(run_every=...) is a native Streamlit feature — it reruns
+    just this function on a timer, with no page reload and no third-party
+    component, which is what streamlit-autorefresh was for. That component
+    loads its own frontend JS from a separate asset bundle, which Streamlit
+    Cloud's proxy/network setup sometimes can't fetch ("having trouble
+    loading the streamlit_autorefresh.st_autorefresh component"); this way
+    there's no extra component to fail."""
+    st.title("📊 Tradeloop")
+    st.caption("Global Stock Exchange Terminal")
     st.caption(
-        "Click any row to load that exchange's benchmark into the chart "
-        "above. Source: Yahoo Finance via yfinance — delayed quotes, fine "
-        "for a dashboard, not for execution. Each exchange is shown "
-        "through its benchmark index, so levels are index points, not "
-        "prices."
+        f"Last refreshed: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}"
+        "  ·  auto-updates every 60s"
     )
 
-with col_feed:
-    st.subheader("News Feed")
-    feed_choice = st.selectbox("Feed", list(NEWS_FEEDS.keys()))
-    items = fetch_news_feed(NEWS_FEEDS[feed_choice])
+    # --- Live chart workspace (search box, big chart, clickable watchlist) ---
+    render_chart_workspace()
 
-    if not items:
-        st.warning(
-            "Couldn't load this feed right now — sources occasionally change "
-            "their RSS endpoints. Double-check the URL in NEWS_FEEDS at the "
-            "top of this file."
+    st.divider()
+
+    col_exchanges, col_feed = st.columns([2, 1])
+
+    with col_exchanges:
+        st.subheader("Browse by Exchange")
+
+        quotes = fetch_quotes(tuple(EXCHANGE_TABLE["Symbol"]))
+        all_exchanges = EXCHANGE_TABLE.merge(quotes, on="Symbol", how="left")
+        live_count = int(all_exchanges["Level"].notna().sum())
+
+        hide_empty = st.checkbox("Hide rows with no data", value=True)
+        st.caption(f"{live_count} of {len(all_exchanges)} exchanges reporting")
+
+        if live_count == 0:
+            st.warning(
+                "Yahoo Finance returned no quotes just now, which is usually a "
+                "brief rate limit or connection issue. Reload in a minute."
+            )
+
+        shown = all_exchanges.dropna(subset=["Level"]) if hide_empty else all_exchanges
+
+        tab_labels = ["All Exchanges", *EXCHANGES.keys()]
+        for tab, label in zip(st.tabs(tab_labels), tab_labels):
+            with tab:
+                if label == "All Exchanges":
+                    view = shown[["Region", *TABLE_COLUMNS]]
+                else:
+                    view = shown[shown["Region"] == label][TABLE_COLUMNS]
+                render_selectable_table(view, key=f"table_{label}")
+
+        st.caption(
+            "Click any row to load that exchange's benchmark into the chart "
+            "above. Source: Yahoo Finance via yfinance — delayed quotes, fine "
+            "for a dashboard, not for execution. Each exchange is shown "
+            "through its benchmark index, so levels are index points, not "
+            "prices."
         )
-    else:
-        # A fixed-height, internally-scrolling box. Without this, the news
-        # list (often much taller than the exchange table next to it) makes
-        # the whole row that tall, leaving a big blank gap under the
-        # shorter "Browse by Exchange" column once its own content ends.
-        with st.container(height=600):
-            for item in items:
-                st.markdown(f"**[{item['title']}]({item['link']})**")
-                if item["published"]:
-                    st.caption(item["published"])
-                st.divider()
 
-st.divider()
+    with col_feed:
+        st.subheader("News Feed")
+        feed_choice = st.selectbox("Feed", list(NEWS_FEEDS.keys()))
+        items = fetch_news_feed(NEWS_FEEDS[feed_choice])
 
-# --- Exchange deep-dive ---
-st.subheader("🔍 Exchange Deep Dive")
-by_country = sorted(EXCHANGE_BY_NAME, key=lambda n: (EXCHANGE_BY_NAME[n]["Country"], n))
-selected_exchange = st.selectbox(
-    "Select an exchange",
-    by_country,
-    index=by_country.index(DEFAULT_EXCHANGE),
-    format_func=lambda n: f"{EXCHANGE_BY_NAME[n]['Country']}  ·  {n}",
-    key="deep_dive_select",
-)
-if selected_exchange:
-    render_exchange_detail(selected_exchange, all_exchanges, hide_empty)
+        if not items:
+            st.warning(
+                "Couldn't load this feed right now — sources occasionally change "
+                "their RSS endpoints. Double-check the URL in NEWS_FEEDS at the "
+                "top of this file."
+            )
+        else:
+            # A fixed-height, internally-scrolling box. Without this, the news
+            # list (often much taller than the exchange table next to it) makes
+            # the whole row that tall, leaving a big blank gap under the
+            # shorter "Browse by Exchange" column once its own content ends.
+            with st.container(height=600):
+                for item in items:
+                    st.markdown(f"**[{item['title']}]({item['link']})**")
+                    if item["published"]:
+                        st.caption(item["published"])
+                    st.divider()
+
+    st.divider()
+
+    # --- Exchange deep-dive ---
+    st.subheader("🔍 Exchange Deep Dive")
+    by_country = sorted(EXCHANGE_BY_NAME, key=lambda n: (EXCHANGE_BY_NAME[n]["Country"], n))
+    selected_exchange = st.selectbox(
+        "Select an exchange",
+        by_country,
+        index=by_country.index(DEFAULT_EXCHANGE),
+        format_func=lambda n: f"{EXCHANGE_BY_NAME[n]['Country']}  ·  {n}",
+        key="deep_dive_select",
+    )
+    if selected_exchange:
+        render_exchange_detail(selected_exchange, all_exchanges, hide_empty)
+
+
+render_dashboard()
