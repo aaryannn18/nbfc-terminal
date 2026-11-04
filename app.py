@@ -122,6 +122,50 @@ st.markdown(
 # Providers -> Email -> "Confirm email".
 # ---------------------------------------------------------------------------
 
+def password_strength(password: str) -> tuple[str, str, float]:
+    """A simple, visible strength meter — length plus a mix of upper/lower
+    case, digits and symbols. Not a security guarantee, just the same kind
+    of live feedback most sign-up forms show."""
+    if not password:
+        return "", "", 0.0
+    score = 0
+    if len(password) >= 8:
+        score += 1
+    if len(password) >= 12:
+        score += 1
+    if any(c.islower() for c in password) and any(c.isupper() for c in password):
+        score += 1
+    if any(c.isdigit() for c in password):
+        score += 1
+    if any(not c.isalnum() for c in password):
+        score += 1
+
+    if score <= 1:
+        return "Weak", "#ef5350", score / 5
+    if score <= 3:
+        return "Fair", "#ffa726", score / 5
+    if score == 4:
+        return "Good", "#42a5f5", score / 5
+    return "Strong", "#26a69a", score / 5
+
+
+def render_password_strength(password: str):
+    if not password:
+        return
+    label, color, frac = password_strength(password)
+    st.markdown(
+        f"""
+        <div style="margin: -6px 0 12px 0;">
+            <div style="background: rgba(255,255,255,0.08); border-radius: 4px; height: 6px; overflow: hidden;">
+                <div style="width: {int(frac * 100)}%; height: 100%; background: {color};"></div>
+            </div>
+            <div style="font-size: 0.78rem; color: {color}; margin-top: 3px;">{label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 @st.cache_resource
 def get_supabase_client():
     url = st.secrets.get("SUPABASE_URL") if hasattr(st, "secrets") else None
@@ -180,12 +224,16 @@ def require_login():
 
     with tab_register:
         st.caption("Takes a few seconds — just an email and a password.")
-        with st.form("register_form"):
-            reg_email = st.text_input("Email", key="register_email")
-            reg_password = st.text_input(
-                "Password (min. 6 characters)", type="password", key="register_password"
-            )
-            reg_submitted = st.form_submit_button("Create Account")
+        # Not wrapped in st.form, on purpose: a form only reruns the script
+        # on submit, so the strength meter below couldn't update live as
+        # you type. Outside a form, every keystroke reruns the page, which
+        # is what makes the live meter possible.
+        reg_email = st.text_input("Email", key="register_email")
+        reg_password = st.text_input(
+            "Password (min. 6 characters)", type="password", key="register_password"
+        )
+        render_password_strength(reg_password)
+        reg_submitted = st.button("Create Account", key="register_submit")
         if reg_submitted:
             if "@" not in reg_email:
                 st.error("Enter a valid email address.")
