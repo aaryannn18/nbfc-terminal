@@ -218,6 +218,7 @@ def require_login():
                 )
                 st.session_state.user_email = result.user.email
                 st.session_state.user_id = result.user.id
+                st.session_state.user_metadata = result.user.user_metadata or {}
                 st.rerun()
             except Exception as exc:
                 st.error(f"Couldn't log in: {exc}")
@@ -249,6 +250,7 @@ def require_login():
                         # signed in immediately.
                         st.session_state.user_email = result.user.email
                         st.session_state.user_id = result.user.id
+                        st.session_state.user_metadata = result.user.user_metadata or {}
                         st.rerun()
                     else:
                         st.success(
@@ -1455,18 +1457,70 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
 # Layout
 # ---------------------------------------------------------------------------
 
-with st.sidebar:
-    st.caption(f"Signed in as **{st.session_state.get('user_email', '')}**")
-    if st.button("Log out"):
-        client = get_supabase_client()
-        if client is not None:
-            try:
-                client.auth.sign_out()
-            except Exception:
-                pass
-        for key in ("user_email", "user_id"):
-            st.session_state.pop(key, None)
-        st.rerun()
+def render_account_panel():
+    """Sidebar account section: who's signed in, an editable profile (name/
+    phone/company — stored on the Supabase user as metadata, no separate
+    database table needed), a password-change form, and sign out."""
+    client = get_supabase_client()
+    metadata = st.session_state.get("user_metadata") or {}
+
+    with st.sidebar:
+        st.caption(f"Signed in as **{st.session_state.get('user_email', '')}**")
+
+        with st.expander("⚙️ My Account"):
+            st.markdown("**Profile**")
+            full_name = st.text_input(
+                "Full name", value=metadata.get("full_name", ""), key="acct_full_name"
+            )
+            company = st.text_input(
+                "Company (optional)", value=metadata.get("company", ""), key="acct_company"
+            )
+            phone = st.text_input(
+                "Phone (optional)", value=metadata.get("phone", ""), key="acct_phone"
+            )
+            if st.button("Save Profile", key="acct_save_profile"):
+                if client is None:
+                    st.error("Accounts aren't configured right now.")
+                else:
+                    try:
+                        result = client.auth.update_user(
+                            {"data": {"full_name": full_name, "company": company, "phone": phone}}
+                        )
+                        st.session_state.user_metadata = result.user.user_metadata or {}
+                        st.success("Profile saved.")
+                    except Exception as exc:
+                        st.error(f"Couldn't save profile: {exc}")
+
+            st.divider()
+            st.markdown("**Change Password**")
+            new_password = st.text_input(
+                "New password", type="password", key="acct_new_password"
+            )
+            render_password_strength(new_password)
+            if st.button("Update Password", key="acct_update_password"):
+                if client is None:
+                    st.error("Accounts aren't configured right now.")
+                elif len(new_password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    try:
+                        client.auth.update_user({"password": new_password})
+                        st.success("Password updated. Use it next time you log in.")
+                    except Exception as exc:
+                        st.error(f"Couldn't update password: {exc}")
+
+        if st.button("Log out"):
+            if client is not None:
+                try:
+                    client.auth.sign_out()
+                except Exception:
+                    pass
+            for key in ("user_email", "user_id", "user_metadata"):
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
+render_account_panel()
 
 @st.fragment(run_every=60)
 def render_dashboard():
