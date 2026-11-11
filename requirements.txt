@@ -4,3 +4,4 @@ feedparser>=6.0.10
 pandas>=2.0
 plotly>=5.18
 supabase>=2.3,<3
+streamlit-cookies-controller>=0.0.4
