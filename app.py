@@ -38,6 +38,7 @@ show this to):
     all verified, so a row that shows dashes is the first thing to check.
 """
 
+import math
 from datetime import datetime
 
 import feedparser
@@ -1109,6 +1110,43 @@ def compute_signal(price, indicators: dict) -> str:
     return "Hold"
 
 
+@st.cache_data(ttl=600)
+def compute_price_projection(symbol: str, horizon_days: int = 30) -> dict:
+    """A historical-volatility price RANGE, not a forecast. We take the
+    stock's own daily log-return volatility over the last year and scale it
+    forward by sqrt(horizon_days) — the standard way to project volatility
+    over a longer window. The range is centered on today's price with
+    deliberately NO drift/trend term, so it can only say "this stock has
+    typically moved about this much over a month-long window," never "it's
+    going up" or "it's going down." That's intentional: this app is not
+    investment advice, and a directional number would read as one."""
+    result = {"price": None, "low": None, "high": None, "horizon_days": horizon_days}
+    hist = fetch_history(symbol, "1y", "1d")
+    if hist.empty or "Close" not in hist.columns:
+        return result
+
+    close = hist["Close"].dropna()
+    if len(close) < 20:
+        return result
+
+    try:
+        price = float(close.iloc[-1])
+        log_returns = (close / close.shift(1)).dropna()
+        log_returns = log_returns[log_returns > 0].apply(math.log)
+        if log_returns.empty:
+            return result
+        daily_vol = float(log_returns.std())
+        if not daily_vol or pd.isna(daily_vol):
+            return result
+        horizon_vol = daily_vol * math.sqrt(horizon_days)
+        result["price"] = price
+        result["low"] = price * math.exp(-horizon_vol)
+        result["high"] = price * math.exp(horizon_vol)
+    except Exception:
+        pass
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Chart builder
 # ---------------------------------------------------------------------------
@@ -1483,6 +1521,81 @@ def render_chart_workspace():
         render_watchlist_group("STOCKS", stock_list, "stk")
 
 
+def render_prediction_table(companies: list, key: str):
+    """One combined table per exchange: trailing returns, trend vs. the
+    50/200-day averages, RSI, the existing rule-based Buy/Sell/Hold signal,
+    and a historical-volatility 30-day price range. Every value is
+    pre-formatted into a plain string before the DataFrame is built — never
+    pandas .style.format()/.style.map(), which silently blanked tables here
+    before. Clicking a row loads that company into the shared chart above,
+    same as every other table in the app."""
+    rows = []
+    for company_name, symbol in companies:
+        stats = fetch_exchange_stats(symbol)
+        hist = fetch_history(symbol, "1y", "1d")
+        indicators = compute_indicators(hist)
+        price = stats.get("price")
+
+        trend = "—"
+        sma50 = indicators.get("sma50")
+        sma200 = indicators.get("sma200")
+        above50 = above200 = None
+        if price and isinstance(sma50, pd.Series) and not sma50.dropna().empty:
+            above50 = price > sma50.dropna().iloc[-1]
+        if price and isinstance(sma200, pd.Series) and not sma200.dropna().empty:
+            above200 = price > sma200.dropna().iloc[-1]
+        if above50 is not None and above200 is not None:
+            if above50 and above200:
+                trend = "Uptrend"
+            elif not above50 and not above200:
+                trend = "Downtrend"
+            else:
+                trend = "Mixed"
+
+        rsi_val = "—"
+        rsi_series = indicators.get("rsi")
+        if isinstance(rsi_series, pd.Series) and not rsi_series.dropna().empty:
+            rsi_val = f"{rsi_series.dropna().iloc[-1]:.0f}"
+
+        signal = compute_signal(price, indicators)
+
+        proj = compute_price_projection(symbol, horizon_days=30)
+        if proj.get("low") is not None and proj.get("high") is not None:
+            proj_range = f"{_fmt_num(proj['low'])} – {_fmt_num(proj['high'])}"
+        else:
+            proj_range = "—"
+
+        rows.append(
+            {
+                "Company": company_name,
+                "Symbol": symbol,
+                "Last": _fmt_num(price),
+                "1M": _fmt_signed_pct(stats.get("ret_1m")),
+                "3M": _fmt_signed_pct(stats.get("ret_3m")),
+                "6M": _fmt_signed_pct(stats.get("ret_6m")),
+                "1Y": _fmt_signed_pct(stats.get("ret_1y")),
+                "Trend": trend,
+                "RSI": rsi_val,
+                "Signal": signal,
+                "Est. 30D Range": proj_range,
+            }
+        )
+
+    if not rows:
+        st.caption("No companies to show here yet.")
+        return
+
+    st.markdown("**📈 Prediction Table**")
+    render_selectable_table(pd.DataFrame(rows), key=key)
+    st.caption(
+        "Not a forecast: \"Est. 30D Range\" is how far this stock has "
+        "typically moved over a month, based on its own price history, "
+        "centered on today's price with no up/down bias. Trend/RSI/Signal "
+        "are the same rule-based technical readouts used elsewhere in this "
+        "app, not investment advice."
+    )
+
+
 def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
     meta = EXCHANGE_BY_NAME[name]
     symbol = meta["Symbol"]
@@ -1517,6 +1630,7 @@ def render_exchange_detail(name: str, table: pd.DataFrame, hide_empty: bool):
             f"Companies listed on {name}", [sym for _, sym in companies], f"exch_{symbol}"
         )
         st.caption("Click a company to load its full research panel into the chart above.")
+        render_prediction_table(companies, key=f"predict_{symbol}")
     else:
         st.caption(
             "No companies added for this exchange yet. Add them to "
