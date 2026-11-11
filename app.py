@@ -54,6 +54,13 @@ try:
 except ImportError:
     SUPABASE_SDK_AVAILABLE = False
 
+try:
+    from streamlit_cookies_controller import CookieController
+
+    COOKIES_AVAILABLE = True
+except ImportError:
+    COOKIES_AVAILABLE = False
+
 st.set_page_config(page_title="Tradeloop", layout="wide", page_icon="📊")
 
 # ---------------------------------------------------------------------------
@@ -178,6 +185,76 @@ def get_supabase_client():
         return None
 
 
+# ---------------------------------------------------------------------------
+# "Remember me" — a browser cookie holding Supabase's refresh token, via a
+# small third-party component (streamlit-cookies-controller). Like any
+# component with its own frontend assets, it can occasionally fail to load
+# on Streamlit Cloud (the same class of issue streamlit-autorefresh had),
+# so every call to it is wrapped defensively: a hiccup here just turns off
+# persistence for that visit rather than breaking login.
+# ---------------------------------------------------------------------------
+
+REMEMBER_ME_COOKIE = "tradeloop_refresh_token"
+REMEMBER_ME_SECONDS = 60 * 60 * 24 * 30  # 30 days
+
+
+@st.cache_resource
+def get_cookie_controller():
+    if not COOKIES_AVAILABLE:
+        return None
+    try:
+        return CookieController()
+    except Exception:
+        return None
+
+
+def remember_session(refresh_token):
+    controller = get_cookie_controller()
+    if controller is None or not refresh_token:
+        return
+    try:
+        controller.set(REMEMBER_ME_COOKIE, refresh_token, max_age=REMEMBER_ME_SECONDS)
+    except Exception:
+        pass
+
+
+def forget_session():
+    controller = get_cookie_controller()
+    if controller is None:
+        return
+    try:
+        controller.remove(REMEMBER_ME_COOKIE)
+    except Exception:
+        pass
+
+
+def restore_remembered_session(client) -> bool:
+    """Tries to silently log a visitor back in from a "Remember me" cookie.
+    Returns True only if it actually restored a session."""
+    controller = get_cookie_controller()
+    if controller is None:
+        return False
+    try:
+        refresh_token = controller.get(REMEMBER_ME_COOKIE)
+    except Exception:
+        refresh_token = None
+    if not refresh_token:
+        return False
+    try:
+        result = client.auth.refresh_session(refresh_token)
+        st.session_state.user_email = result.user.email
+        st.session_state.user_id = result.user.id
+        st.session_state.user_metadata = result.user.user_metadata or {}
+        # Supabase rotates the refresh token on use — keep the cookie in
+        # sync with the new one so the next visit still works.
+        if result.session and result.session.refresh_token:
+            remember_session(result.session.refresh_token)
+        return True
+    except Exception:
+        forget_session()
+        return False
+
+
 def require_login():
     """Blocks the rest of the app behind a Log In / Register screen. Must
     run before anything else draws, so a signed-out visitor never sees the
@@ -201,6 +278,9 @@ def require_login():
         )
         st.stop()
 
+    if restore_remembered_session(client):
+        st.rerun()
+
     st.title("📊 Tradeloop")
     st.caption("Sign in or create a free account to continue.")
 
@@ -210,6 +290,9 @@ def require_login():
         with st.form("login_form"):
             email = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
+            remember_me = st.checkbox(
+                "Remember me on this device", value=True, key="login_remember_me"
+            )
             submitted = st.form_submit_button("Log In")
         if submitted:
             try:
@@ -219,6 +302,8 @@ def require_login():
                 st.session_state.user_email = result.user.email
                 st.session_state.user_id = result.user.id
                 st.session_state.user_metadata = result.user.user_metadata or {}
+                if remember_me and result.session:
+                    remember_session(result.session.refresh_token)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Couldn't log in: {exc}")
@@ -251,6 +336,7 @@ def require_login():
                         st.session_state.user_email = result.user.email
                         st.session_state.user_id = result.user.id
                         st.session_state.user_metadata = result.user.user_metadata or {}
+                        remember_session(result.session.refresh_token)
                         st.rerun()
                     else:
                         st.success(
@@ -1515,6 +1601,7 @@ def render_account_panel():
                     client.auth.sign_out()
                 except Exception:
                     pass
+            forget_session()
             for key in ("user_email", "user_id", "user_metadata"):
                 st.session_state.pop(key, None)
             st.rerun()
